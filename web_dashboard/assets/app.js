@@ -81,11 +81,7 @@ function animateCounters() {
   });
 }
 
-function getCSSVar(name, fallback) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
-}
-
-function drawLineChart(canvas, values, color) {
+function drawLineChart(canvas, values, color = "#22c7bb") {
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
   const ratio = window.devicePixelRatio || 1;
@@ -101,7 +97,7 @@ function drawLineChart(canvas, values, color) {
   const step = (rect.width - pad * 2) / (values.length - 1);
   const toY = (v) => rect.height - pad - ((v - min) / (max - min || 1)) * (rect.height - pad * 2);
 
-  ctx.strokeStyle = "rgba(15,23,42,.06)";
+  ctx.strokeStyle = "rgba(255,255,255,.1)";
   ctx.lineWidth = 1;
   for (let i = 0; i < 4; i++) {
     const y = pad + i * ((rect.height - pad * 2) / 3);
@@ -111,12 +107,9 @@ function drawLineChart(canvas, values, color) {
     ctx.stroke();
   }
 
-  const accent = getCSSVar("--page-accent", "#6366f1");
-  const strokeColor = color || accent;
-
   const gradient = ctx.createLinearGradient(0, pad, 0, rect.height - pad);
-  gradient.addColorStop(0, strokeColor.startsWith("#") ? `${strokeColor}44` : strokeColor);
-  gradient.addColorStop(1, strokeColor.startsWith("#") ? `${strokeColor}00` : strokeColor);
+  gradient.addColorStop(0, "rgba(34,199,187,.42)");
+  gradient.addColorStop(1, "rgba(34,199,187,0)");
 
   ctx.beginPath();
   values.forEach((value, i) => {
@@ -138,7 +131,7 @@ function drawLineChart(canvas, values, color) {
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
-  ctx.strokeStyle = strokeColor;
+  ctx.strokeStyle = color;
   ctx.lineWidth = 4;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -167,8 +160,8 @@ function drawDonut(canvas, values, colors) {
     ctx.stroke();
     start += angle;
   });
-  ctx.fillStyle = getCSSVar("--text", "#f1f5f9");
-  ctx.font = "500 34px 'Space Grotesk'";
+  ctx.fillStyle = "#f7f8ff";
+  ctx.font = "900 34px system-ui";
   ctx.textAlign = "center";
   ctx.fillText(`${total}`, cx, cy + 10);
 }
@@ -199,15 +192,9 @@ function bindDemoButtons() {
 
 function bootCharts() {
   drawLineChart($("#trendChart"), [62, 68, 71, 73, 76, 81, 84, 88, 86, 91, 94, 96]);
-  drawLineChart($("#sleepChart"), [5.8, 6.1, 5.6, 6.8, 7.0, 6.4, 7.2], getCSSVar("--page-accent-2", "#14b8a6"));
-  drawLineChart($("#groupChart"), [42, 55, 61, 70, 76, 82, 89], getCSSVar("--blue", "#3b82f6"));
-  drawDonut($("#sourceDonut"), [34, 22, 18, 16, 10], [
-    getCSSVar("--accent", "#6366f1"),
-    getCSSVar("--blue", "#3b82f6"),
-    getCSSVar("--accent-2", "#14b8a6"),
-    getCSSVar("--orange", "#f59e0b"),
-    getCSSVar("--pink", "#ec4899")
-  ]);
+  drawLineChart($("#sleepChart"), [5.8, 6.1, 5.6, 6.8, 7.0, 6.4, 7.2], "#8d7aff");
+  drawLineChart($("#groupChart"), [42, 55, 61, 70, 76, 82, 89], "#5d8cff");
+  drawDonut($("#sourceDonut"), [34, 22, 18, 16, 10], ["#22c7bb", "#5d8cff", "#8d7aff", "#ffad2f", "#ff62a7"]);
 }
 
 function bindPlanet() {
