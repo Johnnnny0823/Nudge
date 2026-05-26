@@ -8,7 +8,6 @@ import 'screens/health_page.dart';
 import 'screens/statistics_page.dart';
 import 'screens/social_page.dart';
 import 'theme/app_ui.dart';
-import 'screens/onboarding_page.dart';
 
 void main() {
   runApp(const NudgeApp());
@@ -219,35 +218,7 @@ class _AppRoot extends StatelessWidget {
           ),
         ),
       ),
-      home: !appState.isHydrated
-          ? const _AppLoadingScreen()
-          : (appState.hasCompletedOnboarding
-                ? const MainShell()
-                : const OnboardingPage()),
-    );
-  }
-}
-
-class _AppLoadingScreen extends StatelessWidget {
-  const _AppLoadingScreen();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(
-              width: 34,
-              height: 34,
-              child: CircularProgressIndicator(strokeWidth: 3),
-            ),
-            const SizedBox(height: 16),
-            Text('正在準備 Nudge', style: AppUI.cardTitleOf(context)),
-          ],
-        ),
-      ),
+      home: const MainShell(),
     );
   }
 }

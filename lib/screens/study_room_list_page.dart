@@ -29,7 +29,6 @@ class _StudyRoomListPageState extends State<StudyRoomListPage> {
   String _selectedTag = '全部';
   String _searchQuery = '';
   _RoomSortType _sortType = _RoomSortType.activeFirst;
-  String? _joiningRoomId;
 
   @override
   void dispose() {
@@ -480,8 +479,6 @@ class _StudyRoomListPageState extends State<StudyRoomListPage> {
     BuildContext context,
     StudyRoomData room,
   ) async {
-    if (_joiningRoomId == room.id) return;
-
     final appState = context.read<AppState>();
     final alreadyJoined = appState.studyRooms.any(
       (existing) =>
@@ -504,121 +501,66 @@ class _StudyRoomListPageState extends State<StudyRoomListPage> {
       return;
     }
 
-    FocusManager.instance.primaryFocus?.unfocus();
-    setState(() {
-      _joiningRoomId = room.id;
-    });
-
-    try {
-      if (room.password.isNotEmpty) {
-        final password = await _askRoomPassword(context, roomName: room.name);
+    if (room.password.isNotEmpty) {
+      final password = await _askRoomPassword(context);
+      if (password == null) return;
+      if (password != room.password) {
         if (!context.mounted) return;
-        if (password == null) return;
-        if (password != room.password) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('密碼不正確')));
-          return;
-        }
-      }
-
-      final needsApproval = room.joinMode == StudyRoomJoinMode.approval;
-      if (needsApproval) {
-        appState.joinStudyRoomFromDiscovery(
-          room: room,
-          isApproved: false,
-          joinAnswer: '我想加入這間自律房一起完成目標。',
-        );
-      } else {
-        appState.joinStudyRoomFromDiscovery(room: room);
-      }
-
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            needsApproval ? '已送出加入申請：${room.name}' : '已加入房間：${room.name}',
-          ),
-        ),
-      );
-    } finally {
-      if (mounted && _joiningRoomId == room.id) {
-        setState(() {
-          _joiningRoomId = null;
-        });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('密碼不正確')));
+        return;
       }
     }
+
+    final needsApproval = room.joinMode == StudyRoomJoinMode.approval;
+    if (needsApproval) {
+      appState.joinStudyRoomFromDiscovery(
+        room: room,
+        isApproved: false,
+        joinAnswer: '我想加入這間自律房一起完成目標。',
+      );
+    } else {
+      appState.joinStudyRoomFromDiscovery(room: room);
+    }
+
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          needsApproval ? '已送出加入申請：${room.name}' : '已加入房間：${room.name}',
+        ),
+      ),
+    );
   }
 
-  Future<String?> _askRoomPassword(
-    BuildContext context, {
-    required String roomName,
-  }) async {
+  Future<String?> _askRoomPassword(BuildContext context) {
     final controller = TextEditingController();
 
-    try {
-      return await showDialog<String>(
-        context: context,
-        useRootNavigator: false,
-        requestFocus: false,
-        builder: (dialogContext) {
-          return AlertDialog(
-            insetPadding: const EdgeInsets.symmetric(
-              horizontal: 24,
-              vertical: 24,
+    return showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('輸入房間密碼'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            obscureText: true,
+            decoration: const InputDecoration(hintText: '房間密碼'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
             ),
-            title: const Text('輸入房間密碼'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  roomName,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    color: AppUI.textPrimaryOf(dialogContext),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: controller,
-                  autofocus: false,
-                  obscureText: true,
-                  textInputAction: TextInputAction.done,
-                  decoration: const InputDecoration(
-                    labelText: '房間密碼',
-                    hintText: '請輸入房主提供的密碼',
-                  ),
-                  onSubmitted: (value) {
-                    FocusManager.instance.primaryFocus?.unfocus();
-                    Navigator.of(dialogContext).pop(value.trim());
-                  },
-                ),
-              ],
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, controller.text.trim()),
+              child: const Text('加入'),
             ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  FocusManager.instance.primaryFocus?.unfocus();
-                  Navigator.of(dialogContext).pop();
-                },
-                child: const Text('取消'),
-              ),
-              ElevatedButton(
-                onPressed: () {
-                  FocusManager.instance.primaryFocus?.unfocus();
-                  Navigator.of(dialogContext).pop(controller.text.trim());
-                },
-                child: const Text('加入'),
-              ),
-            ],
-          );
-        },
-      );
-    } finally {
-      controller.dispose();
-      FocusManager.instance.primaryFocus?.unfocus();
-    }
+          ],
+        );
+      },
+    ).whenComplete(controller.dispose);
   }
 
   Widget _buildRoomList({
@@ -689,7 +631,6 @@ class _StudyRoomListPageState extends State<StudyRoomListPage> {
                 tags: _displayTags(room),
                 roomTypeIcon: _roomTypeIcon(room.roomType),
                 roomTypeLabel: _roomTypeLabel(room.roomType),
-                isJoining: _joiningRoomId == room.id,
                 onTap: () => discoveryMode && !_hasCurrentUserJoined(room)
                     ? _joinDiscoveryRoom(context, room)
                     : _openRoom(context, room),
@@ -2685,7 +2626,6 @@ class _StudyRoomCard extends StatelessWidget {
   final List<String> tags;
   final IconData roomTypeIcon;
   final String roomTypeLabel;
-  final bool isJoining;
   final VoidCallback onTap;
 
   const _StudyRoomCard({
@@ -2700,7 +2640,6 @@ class _StudyRoomCard extends StatelessWidget {
     required this.tags,
     required this.roomTypeIcon,
     required this.roomTypeLabel,
-    this.isJoining = false,
     required this.onTap,
   });
 
@@ -2728,7 +2667,7 @@ class _StudyRoomCard extends StatelessWidget {
       shape: AppUI.cardShape(),
       child: InkWell(
         borderRadius: BorderRadius.circular(AppUI.radiusCard),
-        onTap: isJoining ? null : onTap,
+        onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.all(AppUI.innerPadding),
           child: Column(
@@ -2775,17 +2714,7 @@ class _StudyRoomCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 10),
-                  if (isJoining)
-                    SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.4,
-                        valueColor: AlwaysStoppedAnimation<Color>(accent),
-                      ),
-                    )
-                  else
-                    Icon(Icons.chevron_right, color: secondaryText),
+                  Icon(Icons.chevron_right, color: secondaryText),
                 ],
               ),
               const SizedBox(height: 12),
@@ -2834,12 +2763,6 @@ class _StudyRoomCard extends StatelessWidget {
                         : const Color(0xFFF3F4F6),
                     textColor: secondaryText,
                   ),
-                  if (room.password.isNotEmpty)
-                    const _RoomTag(
-                      text: '需密碼',
-                      bgColor: Color(0xFFEDE9FE),
-                      textColor: Color(0xFF7C3AED),
-                    ),
                   _RoomTag(
                     text:
                         '每日 ${room.dailyGoalValue % 1 == 0 ? room.dailyGoalValue.toInt() : room.dailyGoalValue} ${room.goalUnitLabel}',
