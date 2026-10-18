@@ -9,8 +9,8 @@
   <body data-page="guardian">
     <div class="shell">
       <aside class="sidebar">
-        <a class="brand" href="index.html"><span class="brand-mark">N</span><span><strong>Nudge</strong><small>孩子週報</small></span></a>
-        <nav class="nav"><a href="index.html">總覽入口</a><a class="active" href="guardian.html">家長陪伴中心</a><a href="groups.html">團體 / 教育管理</a></nav>
+        <a class="brand" href="dashboard.html"><span class="brand-mark">N</span><span><strong>Nudge</strong><small>孩子週報</small></span></a>
+        <nav class="nav"><a href="dashboard.html">總覽入口</a><a class="active" href="guardian.html">家長陪伴中心</a><a href="groups.html">團體 / 教育管理</a></nav>
       </aside>
       <main class="main">
         <header class="hero split">
@@ -26,30 +26,30 @@
           <article class="metric-card has-chart">
             <div class="metric-info">
               <small>完成任務</small>
-              <strong data-count="31" data-suffix=" 個">0</strong>
+              <strong id="childTasksCount" data-count="31" data-suffix=" 個">0</strong>
             </div>
-            <div class="stat-ring" style="--p: 85%; --accent-color: #0ff;"><strong>85%</strong></div>
+            <div class="stat-ring" id="childTasksRing" style="--p: 85%; --accent-color: #0ff;"><strong>85%</strong></div>
           </article>
           <article class="metric-card has-chart">
             <div class="metric-info">
               <small>專注時間</small>
-              <strong data-count="240" data-suffix=" 分">0</strong>
+              <strong id="childFocusVal" data-count="240" data-suffix=" 分">0</strong>
             </div>
-            <div class="stat-ring" style="--p: 72%; --accent-color: #ffad2f;"><strong>72%</strong></div>
+            <div class="stat-ring" id="childFocusRing" style="--p: 72%; --accent-color: #ffad2f;"><strong>72%</strong></div>
           </article>
           <article class="metric-card has-chart">
             <div class="metric-info">
               <small>平均睡眠</small>
-              <strong>6.1 小時</strong>
+              <strong id="childSleepVal">6.1 小時</strong>
             </div>
-            <div class="stat-ring" style="--p: 60%; --accent-color: #8d7aff;"><strong>60%</strong></div>
+            <div class="stat-ring" id="childSleepRing" style="--p: 60%; --accent-color: #8d7aff;"><strong>60%</strong></div>
           </article>
           <article class="metric-card has-chart">
             <div class="metric-info">
               <small>平均步數</small>
-              <strong data-count="6820">0</strong>
+              <strong id="childStepsVal" data-count="6820">0</strong>
             </div>
-            <div class="stat-ring" style="--p: 90%; --accent-color: #22c7bb;"><strong>90%</strong></div>
+            <div class="stat-ring" id="childStepsRing" style="--p: 90%; --accent-color: #22c7bb;"><strong>90%</strong></div>
           </article>
         </section>
         <section class="workspace-layout page-section">
@@ -58,7 +58,7 @@
         </section>
       </main>
     </div>
-    <script src="assets/app.js"></script>
+    <script src="assets/app.js?v=12"></script>
   </body>
 </html>
 

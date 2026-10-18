@@ -1,0 +1,1948 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nudge 好友功能</title>
+    <link rel="stylesheet" href="assets/styles.css" />
+    <style>
+      .friend-tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 20px;
+        border-bottom: 2px solid var(--border);
+        padding-bottom: 12px;
+      }
+      .friend-tab {
+        padding: 8px 16px;
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text-secondary);
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: bold;
+        transition: all 0.2s;
+      }
+      .friend-tab.active {
+        background: var(--page-accent, #34d399);
+        color: #000;
+        border-color: var(--page-accent, #34d399);
+      }
+      .friend-list-item {
+        display: flex;
+        align-items: stretch;
+        background: linear-gradient(90deg, rgba(30,30,45,1) 0%, rgba(42,42,64,0.4) 100%);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        margin-bottom: 16px;
+        overflow: hidden;
+        transition: transform 0.2s, border-color 0.2s;
+        cursor: pointer;
+      }
+      .friend-list-item:hover {
+        border-color: var(--page-accent, #34d399);
+        transform: translateX(4px);
+      }
+      .friend-avatar {
+        width: 100px;
+        background: #2a2a40;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 48px;
+        position: relative;
+        border-right: 1px solid var(--border);
+      }
+      .friend-lv-badge {
+        position: absolute;
+        top: 0;
+        left: 0;
+        background: rgba(0,0,0,0.7);
+        color: #fbbf24;
+        font-size: 11px;
+        font-weight: 900;
+        padding: 2px 6px;
+        border-bottom-right-radius: 8px;
+      }
+      .friend-info {
+        flex: 1;
+        padding: 12px 16px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+      .friend-name-row {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        margin-bottom: 6px;
+      }
+      .friend-name {
+        font-size: 18px;
+        font-weight: 800;
+        color: var(--text-primary);
+      }
+      .friend-status {
+        font-size: 13px;
+        color: var(--text-secondary);
+        background: rgba(255,255,255,0.05);
+        padding: 2px 8px;
+        border-radius: 4px;
+      }
+      .friend-stats-row {
+        display: flex;
+        gap: 16px;
+        font-size: 13px;
+        color: #9ca3af;
+      }
+      .friend-meta {
+        padding: 12px 16px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        justify-content: space-between;
+        border-left: 1px dashed var(--border);
+      }
+      .friend-last-login {
+        font-size: 12px;
+        color: #9ca3af;
+      }
+      
+      /* Detail View — full main-area takeover */
+      #friendDetailView {
+        --page-accent: #7c6ae6;
+        --page-accent-2: #8d7aff;
+        --page-wash: rgba(124, 106, 230, 0.12);
+        display: none;
+        position: absolute;
+        inset: 0;
+        overflow-y: auto;
+        background: var(--bg, #03050a);
+        z-index: 200;
+        padding: 0;
+      }
+
+      /* Sticky back bar */
+      #friendDetailBackBar {
+        position: sticky;
+        top: 0;
+        z-index: 300;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 24px;
+        background: rgba(3, 5, 10, 0.85);
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+      }
+      #friendDetailBackBar .back-button {
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.12);
+        color: var(--text-primary, #fff);
+        padding: 7px 16px;
+        border-radius: 8px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: 700;
+        font-size: 14px;
+        transition: background 0.2s;
+      }
+      #friendDetailBackBar .back-button:hover {
+        background: rgba(255,255,255,0.1);
+      }
+      #friendDetailBackBar .back-title {
+        font-size: 14px;
+        color: var(--text-secondary, #9ca3af);
+        font-weight: 600;
+      }
+
+      /* The scrollable inner body of the detail view */
+      #friendDetailBody {
+        padding: 0 24px 48px;
+      }
+      /* ── Profile-matching styles for friend detail view ── */
+      #friendDetailView .fb-cover-banner {
+        height: 260px;
+        width: 100%;
+        position: relative;
+        background: linear-gradient(135deg, var(--page-accent, #7c6ae6) 0%, #1e144a 50%, #03050a 100%);
+        overflow: hidden;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+      }
+      #friendDetailView .fb-cover-banner::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background-image:
+          radial-gradient(circle at 80% 20%, rgba(255,255,255,0.1) 0%, transparent 50%),
+          linear-gradient(to right, rgba(255,255,255,0.03) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(255,255,255,0.03) 1px, transparent 1px);
+        background-size: 100% 100%, 24px 24px, 24px 24px;
+        opacity: 0.8;
+      }
+      #friendDetailView .fb-profile-header-bar {
+        padding: 0 32px 24px;
+        position: relative;
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 24px;
+      }
+      #friendDetailView .fb-profile-avatar-wrapper {
+        margin-top: -80px;
+        position: relative;
+        z-index: 10;
+        flex-shrink: 0;
+      }
+      #friendDetailView .fb-avatar {
+        width: 140px;
+        height: 140px;
+        border-radius: 50%;
+        border: 6px solid #070a14;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 54px;
+        font-weight: 900;
+        color: #fff;
+        transition: transform 0.3s;
+      }
+      #friendDetailView .fb-avatar:hover { transform: scale(1.02); }
+      #friendDetailView .fb-profile-info {
+        flex: 1;
+        margin-bottom: 8px;
+        text-align: left;
+      }
+      #friendDetailView .fb-profile-name {
+        font-size: 28px;
+        font-weight: 800;
+        color: #fff;
+        margin: 0;
+      }
+      #friendDetailView .fb-profile-signature {
+        color: var(--muted);
+        font-size: 14px;
+        font-style: italic;
+        margin: 6px 0 0 0;
+        line-height: 1.4;
+      }
+      #friendDetailView .fb-profile-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+      }
+      .fb-stat-tag {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 12px;
+        padding: 8px 16px;
+        font-weight: 700;
+        font-size: 14px;
+      }
+      .fb-stat-tag.coins { color: #f59e0b; }
+      .fb-stat-tag.planets { color: #a855f7; }
+      #friendDetailView .fb-profile-subnav {
+        display: flex;
+        border-top: 1px solid rgba(255,255,255,0.08);
+        padding: 0 24px;
+        background: rgba(7,10,20,0.4);
+      }
+      #friendDetailView .fb-profile-subnav a {
+        padding: 16px 20px;
+        text-decoration: none;
+        color: var(--muted);
+        font-weight: 700;
+        font-size: 14px;
+        border-bottom: 3px solid transparent;
+        transition: all 0.2s;
+      }
+      #friendDetailView .fb-profile-subnav a:hover {
+        color: #fff;
+        background: rgba(255,255,255,0.02);
+      }
+      #friendDetailView .fb-profile-subnav a.active {
+        color: var(--page-accent, #7c6ae6);
+        border-bottom-color: var(--page-accent, #7c6ae6);
+      }
+      #friendDetailView .fb-profile-body {
+        display: grid;
+        grid-template-columns: 360px 1fr;
+        gap: 24px;
+        align-items: start;
+        margin-top: 24px;
+      }
+      @media (max-width: 900px) {
+        #friendDetailView .fb-profile-header-bar { flex-direction: column; align-items: center; text-align: center; }
+        #friendDetailView .fb-profile-info { text-align: center; }
+        #friendDetailView .fb-profile-name-row { justify-content: center; }
+        #friendDetailView .fb-profile-actions { justify-content: center; }
+        #friendDetailView .fb-profile-body { grid-template-columns: 1fr; }
+      }
+      .fb-card {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        padding: 20px;
+        box-shadow: var(--shadow);
+      }
+      .fb-card-title {
+        font-size: 16px;
+        font-weight: 800;
+        color: #fff;
+        margin: 0 0 16px 0;
+        text-align: left;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        padding-bottom: 10px;
+      }
+      .intro-list {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        text-align: left;
+      }
+      .intro-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 14px;
+        color: var(--text);
+      }
+      .badges-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+      }
+      .intro-item span.icon {
+        font-size: 18px;
+        width: 24px;
+        text-align: center;
+      }
+      .intro-item strong {
+        color: #fff;
+      }
+      .badge-item {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 12px;
+        padding: 10px 4px;
+        transition: transform 0.2s;
+      }
+      .badge-item:hover {
+        transform: translateY(-2px);
+        background: rgba(255, 255, 255, 0.04);
+        border-color: rgba(255, 255, 255, 0.1);
+      }
+      .badge-icon {
+        font-size: 22px;
+      }
+      .badge-name {
+        font-size: 10px;
+        font-weight: 700;
+        color: var(--muted);
+        text-align: center;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        width: 100%;
+      }
+      .fb-post-card {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        padding: 20px;
+        box-shadow: var(--shadow);
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .fb-post-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .fb-post-author-info {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        text-align: left;
+      }
+      .fb-post-author-name {
+        font-weight: 800;
+        color: #fff;
+        font-size: 15px;
+      }
+      .fb-post-time {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 2px;
+        display: block;
+      }
+      .fb-post-content {
+        font-size: 15px;
+        color: #fff;
+        text-align: left;
+        line-height: 1.5;
+        white-space: pre-wrap;
+      }
+      .fb-post-metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+        margin-top: 4px;
+      }
+      .fb-metric-pill {
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 14px;
+        padding: 12px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        text-align: left;
+      }
+      .fb-metric-pill .icon {
+        font-size: 22px;
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .fb-metric-pill.focus .icon {
+        background: rgba(124, 106, 230, 0.15);
+        color: #7c6ae6;
+      }
+      .fb-metric-pill.sleep .icon {
+        background: rgba(141, 122, 255, 0.15);
+        color: #8d7aff;
+      }
+      .fb-metric-pill.steps .icon {
+        background: rgba(20, 184, 166, 0.15);
+        color: #14b8a6;
+      }
+      .fb-metric-pill.tasks .icon {
+        background: rgba(245, 158, 11, 0.15);
+        color: #f59e0b;
+      }
+      .fb-metric-details {
+        display: flex;
+        flex-direction: column;
+      }
+      .fb-metric-label {
+        font-size: 11px;
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .fb-metric-val {
+        font-size: 16px;
+        font-weight: 900;
+        color: #fff;
+        margin-top: 2px;
+      }
+      .fb-post-feedback-summary {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: var(--muted);
+        border-top: 1px solid rgba(255, 255, 255, 0.05);
+        padding-top: 12px;
+      }
+      .fb-post-feedback-actions {
+        border-top: 1px solid rgba(255, 255, 255, 0.05);
+        padding-top: 4px;
+        display: flex;
+        justify-content: space-around;
+      }
+      .fb-post-action-btn {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: transparent;
+        border: none;
+        color: var(--muted);
+        font-weight: 700;
+        font-size: 13px;
+        cursor: pointer;
+        padding: 8px 12px;
+        border-radius: 8px;
+        transition: background 0.2s, color 0.2s;
+      }
+      .fb-post-action-btn:hover {
+        background: rgba(255, 255, 255, 0.04);
+        color: #fff;
+      }
+      .fb-empty-feed {
+        text-align: center;
+        padding: 40px 20px;
+        color: var(--muted);
+      }
+      .fb-empty-feed .icon {
+        font-size: 48px;
+        margin-bottom: 12px;
+        display: block;
+        opacity: 0.6;
+      }
+      
+      /* Inline Planet Modal Styles */
+      .friend-planet-modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(3, 5, 10, 0.85);
+        backdrop-filter: blur(8px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 5000;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s ease;
+      }
+      .friend-planet-modal-overlay.active {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .friend-planet-modal {
+        background: linear-gradient(180deg, #111322 0%, #070913 100%);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 28px;
+        width: 90%;
+        max-width: 600px;
+        height: 600px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        position: relative;
+        box-shadow: 0 30px 60px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.1);
+        transform: translateY(20px);
+        transition: transform 0.3s ease;
+      }
+      .friend-planet-modal-overlay.active .friend-planet-modal {
+        transform: translateY(0);
+      }
+      .friend-planet-stage {
+        flex: 1;
+        position: relative;
+        background: radial-gradient(circle at center, #1b143a 0%, #05060b 100%);
+        overflow: hidden;
+      }
+      .friend-planet-sun {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 80px;
+        height: 80px;
+        background: radial-gradient(circle at 30% 30%, #ffd700 0%, #ff8c00 100%);
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        box-shadow: 0 0 40px #ff8c00, 0 0 80px rgba(255, 140, 0, 0.5);
+        z-index: 5;
+      }
+	      .friend-planet-orbit {
+	        position: absolute;
+	        top: 50%;
+	        left: 50%;
+	        border: 1px dashed rgba(255,255,255,0.08);
+	        border-radius: 50%;
+	        transform: translate(-50%, -50%);
+	      }
+      .friend-planet-node {
+        position: absolute;
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        cursor: pointer;
+      }
+      .friend-planet-node:hover {
+        transform: translate(-50%, -50%) scale(1.15);
+      }
+      @keyframes spin-clockwise {
+        from { transform: translate(-50%, -50%) rotate(0deg); }
+        to { transform: translate(-50%, -50%) rotate(360deg); }
+      }
+      
+      .friend-planet-close-btn {
+        position: absolute;
+        top: 20px;
+        right: 20px;
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.15);
+        color: #fff;
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        font-weight: bold;
+        z-index: 100;
+        transition: all 0.2s;
+      }
+      .friend-planet-close-btn:hover {
+        background: rgba(255,255,255,0.16);
+      }
+    </style>
+  </head>
+  <body data-page="friend">
+    <div class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="dashboard.html"><span class="brand-mark">N</span><span><strong>Nudge</strong><small>好友功能</small></span></a>
+        <nav class="nav">
+          <!-- Sidebar injected by app.js -->
+        </nav>
+      </aside>
+
+      <main class="main" style="position: relative;">
+        <!-- Hero header (hidden when detail view is open) -->
+        <header class="hero split" id="friendHeroHeader">
+          <div>
+            <span class="eyebrow">Friend Profile</span>
+            <h1>好友列表與動態</h1>
+            <p>點擊好友列表中的卡片，即可拜訪他們的星球並查看詳細的自律數據。</p>
+            <div class="subnav">
+              <a class="active" href="friend.html">好友列表與動態</a>
+              <a href="friend-visits.html">好友參訪記錄</a>
+              <a href="planet.html">返回我的星球</a>
+            </div>
+          </div>
+	          <div class="hero-card">
+	            <span>好友人數</span>
+	            <strong id="friendCountValue">0 / 50</strong>
+	            <p id="friendHeroHint">正在同步好友資料...</p>
+	          </div>
+        </header>
+
+        <!-- LIST VIEW -->
+        <section id="friendListView" class="page-section">
+          <div class="friend-tabs">
+            <button class="friend-tab active" onclick="switchFriendTab('列表', this)">好友列表</button>
+            <button class="friend-tab" onclick="switchFriendTab('申請', this)">好友申請 <span style="background: #ef4444; color: white; padding: 2px 6px; border-radius: 10px; font-size: 10px; margin-left: 4px; display: none;" id="reqBadge">0</span></button>
+            <button class="friend-tab" onclick="switchFriendTab('搜尋', this)">好友搜尋</button>
+          </div>
+
+          <!-- 好友列表容器 -->
+          <div class="friend-list" id="friendsListContainer">
+            <div style="text-align:center; padding: 40px; color:#9ca3af;">正在載入好友清單...</div>
+          </div>
+
+          <!-- 好友申請容器 -->
+          <div class="friend-list" id="requestsListContainer" style="display: none;">
+            <div style="text-align:center; padding: 40px; color:#9ca3af;">
+              <div style="font-size:13px; font-weight:800; letter-spacing:1px; margin-bottom:12px; color:#9ca3af;">REQUESTS</div>
+              <strong style="color:#fff;">目前沒有待確認的好友申請</strong>
+              <p style="margin: 8px 0 0; font-size:13px;">前往「好友搜尋」輸入 Nudge ID 發送邀請吧！</p>
+            </div>
+          </div>
+
+          <!-- 好友搜尋容器 -->
+          <div class="friend-list" id="searchContainer" style="display: none;">
+            <div style="text-align:center; padding: 30px; display: flex; justify-content: center; align-items: center; gap: 10px;">
+              <input type="text" id="friendSearchInput" placeholder="輸入好友 Nudge ID (如 NDG_XXXX)..." style="padding:12px 16px; border-radius:12px; border:1px solid var(--line); background:rgba(3, 5, 10, 0.6); color:#fff; width: 340px; outline: none; font-weight: 600; font-size: 14px;"/>
+              <button class="button primary" id="friendSearchBtn" style="padding: 0 24px; font-size: 14px; min-height: 44px; display: inline-flex; align-items: center;">搜尋 ID</button>
+            </div>
+            <div id="searchResultsContainer" style="padding: 10px 20px;"></div>
+          </div>
+        </section>
+
+        <!-- DETAIL VIEW — full-page overlay inside main -->
+        <div id="friendDetailView">
+          <!-- Sticky back bar -->
+          <div id="friendDetailBackBar">
+            <button class="back-button" onclick="showFriendList()">◀ 返回好友列表</button>
+            <span class="back-title" id="friendDetailBackTitle"></span>
+          </div>
+
+          <!-- Scrollable profile body -->
+          <div id="friendDetailBody">
+            <div class="profile-container">
+              <!-- Premium Cover Card Design -->
+              <div class="fb-cover-card">
+                <!-- 1. Cover Photo Banner -->
+                <!-- 1. Cover Photo Banner -->
+                <div class="fb-cover-banner" id="friendCoverBanner">
+                  <div class="glowing-orb"></div>
+                </div>
+
+                <!-- 2. Overlapping Avatar & Name Header (matches profile.html) -->
+                <div class="fb-profile-header-bar">
+                  <div class="fb-profile-avatar-wrapper">
+                    <div class="fb-avatar" id="friendMainAvatar">—</div>
+                  </div>
+                  <div class="fb-profile-info">
+                    <div class="fb-profile-name-row" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                      <h2 class="fb-profile-name" id="friendMainName">讀取中...</h2>
+                      <span class="fb-profile-badge" id="friendMainBadge" style="padding:4px 12px; border-radius:20px; font-size:12px; font-weight:700; border:1px solid rgba(245,158,11,0.25); background:rgba(245,158,11,0.12); color:#f59e0b;">🏆 好友</span>
+                    </div>
+                    <p class="fb-profile-signature" id="friendMainSignature">"讀取自律簽名中..."</p>
+                  </div>
+                  <!-- Action buttons: stat tags + relation buttons -->
+                  <div class="fb-profile-actions" id="friendProfileActions">
+                    <!-- Dynamically populated -->
+                  </div>
+                </div>
+
+                <!-- Visitor mode banner -->
+                <div id="friendVisitorBanner" style="background:rgba(124,106,230,0.1); border-top:1px solid rgba(124,106,230,0.2); padding:10px 32px; font-size:13px; color:var(--muted); text-align:center;">
+                  🔭 您正在瀏覽 <strong id="friendVisitorName"></strong> 的個人名片
+                </div>
+
+                <!-- Sub Nav Row (always visible, matches profile.html) -->
+                <div class="fb-profile-subnav" id="friendSubNav">
+                  <a class="active" href="javascript:void(0);" onclick="switchFriendDetailTab('timeline', this)">動態牆 (Timeline)</a>
+                  <a href="javascript:void(0);" onclick="switchFriendDetailTab('about', this)">關於我 (About)</a>
+                  <a href="javascript:void(0);" onclick="switchFriendDetailTab('progress', this)">自律進度 (Progress)</a>
+                </div>
+              </div>
+
+              <!-- Two Column Profile Content Grid -->
+              <div class="fb-profile-body">
+                <!-- Left Column -->
+                <div class="fb-left-column">
+                  <article class="fb-card">
+                    <h3 class="fb-card-title">自律介紹</h3>
+                    <ul class="intro-list">
+                      <li class="intro-item">
+                        <span class="icon">🆔</span>
+                        <span>Nudge ID: <strong id="friendNudgeId">NDG-Guest</strong></span>
+                      </li>
+                      <li class="intro-item">
+                        <span class="icon">📅</span>
+                        <span>加入自律星系: <strong>2026年5月</strong></span>
+                      </li>
+                      <li class="intro-item">
+                        <span class="icon">📱</span>
+                        <span>上線狀態: <strong id="friendOnlineStatus">離線</strong></span>
+                      </li>
+                      <li class="intro-item">
+                        <span class="icon">🌟</span>
+                        <span>星球繁榮度: <strong id="friendProsperityInfo">0%</strong></span>
+                      </li>
+                    </ul>
+                  </article>
+
+                  <article class="fb-card">
+                    <h3 class="fb-card-title">解鎖成就徽章</h3>
+                    <div class="badges-grid" id="friendUnlockedBadges"></div>
+                  </article>
+                </div>
+
+                <!-- Right Column: dynamic content -->
+                <div class="fb-right-column" id="friendRightColumn">
+                  <div style="text-align:center; padding:60px 20px; color:#9ca3af;">正在載入好友動態...</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </main>
+    </div>
+
+    <!-- Inline Planet Viewer Modal -->
+    <div id="friendPlanetModal" class="friend-planet-modal-overlay" onclick="if(event.target===this) closeFriendPlanetModal()">
+      <div class="friend-planet-modal">
+        <button class="friend-planet-close-btn" onclick="closeFriendPlanetModal()">✕</button>
+        <div style="padding: 20px 24px; border-bottom: 1px solid rgba(255,255,255,0.08); text-align: left;">
+          <h3 style="margin: 0; font-size: 18px; font-weight: 800; color: #fff;" id="modalPlanetTitle">好友的自律星系</h3>
+          <p style="margin: 4px 0 0 0; font-size: 13px; color: var(--muted);" id="modalPlanetSub">自律行星環繞中</p>
+        </div>
+        <div class="friend-planet-stage" id="modalPlanetStage">
+          <div class="friend-planet-sun"></div>
+          <!-- Orbits and planet nodes will be dynamically generated here -->
+        </div>
+      </div>
+    </div>
+    
+    <script>
+      let currentTab = '列表';
+      function switchFriendTab(tabName, btnElement) {
+        document.querySelectorAll('.friend-tab').forEach(b => b.classList.remove('active'));
+        btnElement.classList.add('active');
+        currentTab = tabName;
+        
+        const listContainer = document.getElementById('friendsListContainer');
+        const reqContainer = document.getElementById('requestsListContainer');
+        const searchContainer = document.getElementById('searchContainer');
+        
+        listContainer.style.display = 'none';
+        reqContainer.style.display = 'none';
+        searchContainer.style.display = 'none';
+        
+        if (tabName === '申請') {
+          reqContainer.style.display = 'block';
+          if (reqContainer.textContent.includes("正在載入好友申請")) {
+            if (friendSystemInitializedFor || localStorage.getItem("nudgeWebLoggedIn") === "true") {
+              renderRequestsList(pendingRequestsList, outgoingRequestsList);
+            } else {
+              renderFriendLoginRequired();
+            }
+          }
+          setTimeout(() => {
+            if (!reqContainer.textContent.includes("正在載入好友申請")) return;
+            if (friendSystemInitializedFor) {
+              renderRequestsList(pendingRequestsList, outgoingRequestsList);
+            } else {
+              renderFriendLoginRequired();
+            }
+          }, 800);
+        } else if (tabName === '搜尋') {
+          searchContainer.style.display = 'block';
+        } else {
+          listContainer.style.display = 'block';
+        }
+      }
+
+      let activeUserId = null;
+      let myProfile = null;
+      let friendsList = [];
+      let pendingRequestsList = [];   // incoming
+      let outgoingRequestsList = [];  // outgoing
+      let selectedFriendData = null;
+      let detailActiveTab = 'timeline';
+      let friendSystemInitializedFor = null;
+      let friendSystemUnsubscribers = [];
+
+      function clearFriendSystemListeners() {
+        friendSystemUnsubscribers.forEach((unsubscribe) => {
+          try { unsubscribe(); } catch (err) { console.warn("Friend listener cleanup failed:", err); }
+        });
+        friendSystemUnsubscribers = [];
+      }
+
+      function renderFriendLoginRequired() {
+        const loginHtml = `
+          <div style="text-align:center; padding: 40px; color:#9ca3af;">
+            <div style="font-size:40px; margin-bottom:12px;">🔐</div>
+            <strong style="color:#fff;">請先登入網站帳號</strong>
+            <p style="margin: 8px 0 18px; font-size:13px;">好友搜尋與好友申請需要使用真實登入身分，才能和 App 端資料一致。</p>
+            <a class="button primary" href="login.html" style="display:inline-flex; padding:10px 18px; min-height:auto;">前往登入</a>
+          </div>
+        `;
+        const friendsContainer = document.getElementById("friendsListContainer");
+        const requestsContainer = document.getElementById("requestsListContainer");
+        const resultsContainer = document.getElementById("searchResultsContainer");
+        if (friendsContainer) friendsContainer.innerHTML = loginHtml;
+        if (requestsContainer) requestsContainer.innerHTML = loginHtml;
+        if (resultsContainer) resultsContainer.innerHTML = '';
+      }
+
+      function initFirestoreFriendSystem() {
+        const authUser = (typeof firebase !== 'undefined' && firebase.auth) ? firebase.auth().currentUser : null;
+        if (!db || !authUser || authUser.isAnonymous) {
+          console.warn("Database or authenticated user not found for friend system.");
+          renderFriendLoginRequired();
+          return;
+        }
+
+        activeUserId = authUser.uid;
+        localStorage.setItem("nudgeActiveDemoUserId", activeUserId);
+        localStorage.setItem("nudgeWebLoggedIn", "true");
+
+        if (friendSystemInitializedFor === activeUserId) {
+          return;
+        }
+
+        clearFriendSystemListeners();
+        friendSystemInitializedFor = activeUserId;
+        console.log("Friend System Initializing for User:", activeUserId);
+
+        // Fetch my profile to get nudgeId for outgoing requests
+        db.collection("users").doc(activeUserId).get().then(docSnap => {
+          if (docSnap.exists) {
+            myProfile = docSnap.data();
+          } else {
+            myProfile = { myNudgeId: "NDG_" + activeUserId.substring(0, 4), nickname: "使用者", signature: "今天慢慢前進" };
+          }
+        }).catch(err => {
+          console.warn("Error fetching my profile:", err);
+          myProfile = { myNudgeId: "NDG_" + activeUserId.substring(0, 4), nickname: "使用者", signature: "今天慢慢前進" };
+        });
+
+        // Listen to Friends list
+        const friendsUnsubscribe = db.collection("users").doc(activeUserId).collection("friends").onSnapshot(async (snapshot) => {
+          const friendDocs = snapshot.docs;
+          
+	          // Update Friend Count Card
+	          const countCard = document.getElementById("friendCountValue");
+	          if (countCard) {
+	            countCard.textContent = `${friendDocs.length} / 50`;
+	          }
+	          const hint = document.getElementById("friendHeroHint");
+	          if (hint) {
+	            hint.textContent = friendDocs.length === 0
+	              ? "尚未加入好友，從搜尋 ID 開始建立自律社交圈。"
+	              : `目前已加入 ${friendDocs.length} 位好友。`;
+	          }
+
+          if (friendDocs.length === 0) {
+            document.getElementById("friendsListContainer").innerHTML = `
+              <div style="text-align:center; padding: 40px; color:#9ca3af;">
+                尚未加入任何好友。點擊「好友搜尋」開始建立你的自律社交圈！
+              </div>
+            `;
+            return;
+          }
+
+          const fetchPromises = friendDocs.map(async (doc) => {
+            const friendRel = doc.data();
+            const friendId = doc.id;
+            try {
+              const friendDocSnap = await db.collection("users").doc(friendId).get();
+              if (friendDocSnap.exists) {
+                const friendData = friendDocSnap.data();
+                const friendTasks = friendData.tasks || [];
+                const completedTasks = friendTasks.filter(t => t.isDone || t.done).length;
+                const totalTasks = friendTasks.length;
+                const prosperity = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+                let sleepHours = 8.0;
+                let steps = 0;
+                let exerciseMinutes = 0;
+                if (friendData.dailySummaries && friendData.dailySummaries.length > 0) {
+                  const latest = friendData.dailySummaries[friendData.dailySummaries.length - 1];
+                  sleepHours = latest.sleepHours || sleepHours;
+                  steps = latest.steps || steps;
+                  exerciseMinutes = latest.exerciseMinutes || exerciseMinutes;
+                }
+
+                const avatar = (friendData.avatarProfile && friendData.avatarProfile.icon) ? friendData.avatarProfile.icon : "🧑‍🚀";
+                const avatarColor = (friendData.avatarProfile && friendData.avatarProfile.color) ? friendData.avatarProfile.color : "#7C6AE6";
+
+                return {
+                  id: friendId,
+                  name: friendData.nickname || friendRel.name || friendId,
+                  nudgeId: friendData.myNudgeId || friendRel.nudgeId || "NDG-USER",
+                  signature: friendData.signature || friendRel.signature || "今天慢慢前進",
+                  avatar: avatar,
+                  avatarColor: avatarColor,
+                  prosperity: prosperity,
+                  completedTasks: completedTasks,
+                  totalTasks: totalTasks,
+                  sleepHours: sleepHours,
+                  steps: steps,
+                  exerciseMinutes: exerciseMinutes,
+                  todayFocusSeconds: friendData.focusSeconds || friendRel.todayFocusSeconds || 0,
+                  isStudying: friendData.isStudying || friendRel.isStudying || false,
+                  tasks: friendTasks,
+                  dailySummaries: friendData.dailySummaries || [],
+                  unlockedPlanets: friendData.unlockedPlanets || [],
+                  unlockedBadges: friendData.unlockedBadges || []
+                };
+              }
+            } catch (err) {
+              console.warn("Failed to get friend user details for " + friendId, err);
+            }
+
+            // Fallback if user profile doesn't exist or fail to fetch
+            return {
+              id: friendId,
+              name: friendRel.name || friendId,
+              nudgeId: friendRel.nudgeId || "NDG-USER",
+              signature: friendRel.signature || "今天慢慢前進",
+              avatar: "🧑‍🚀",
+              avatarColor: "#7C6AE6",
+              prosperity: 0,
+              completedTasks: 0,
+              totalTasks: 0,
+              sleepHours: 7.5,
+              steps: 3000,
+              exerciseMinutes: 15,
+              todayFocusSeconds: friendRel.todayFocusSeconds || 0,
+              isStudying: friendRel.isStudying || false,
+              tasks: [],
+              dailySummaries: [],
+              unlockedPlanets: [],
+              unlockedBadges: []
+            };
+          });
+
+          friendsList = await Promise.all(fetchPromises);
+          
+          // Re-render friends UI
+          renderFriendsList(friendsList);
+        });
+        friendSystemUnsubscribers.push(friendsUnsubscribe);
+
+        // Listen to incoming Friend Requests (badge-worthy)
+        const incomingUnsubscribe = db.collection("friend_requests")
+          .where("receiverId", "==", activeUserId)
+          .onSnapshot((snapshot) => {
+            pendingRequestsList = [];
+            snapshot.forEach(doc => {
+              const request = { id: doc.id, ...doc.data() };
+              if (request.status === "pending") {
+                pendingRequestsList.push(request);
+              }
+            });
+            // Client-side sort to avoid index requirements
+            pendingRequestsList.sort((a, b) => {
+              const t1 = a.createdAt ? (a.createdAt.toMillis ? a.createdAt.toMillis() : new Date(a.createdAt).getTime()) : 0;
+              const t2 = b.createdAt ? (b.createdAt.toMillis ? b.createdAt.toMillis() : new Date(b.createdAt).getTime()) : 0;
+              return t2 - t1;
+            });
+
+            // Update badge on Requests tab (only incoming count)
+            const badge = document.getElementById("reqBadge");
+            if (badge) {
+              if (pendingRequestsList.length > 0) {
+                badge.textContent = pendingRequestsList.length;
+                badge.style.display = "inline-block";
+              } else {
+                badge.style.display = "none";
+              }
+            }
+
+            renderRequestsList(pendingRequestsList, outgoingRequestsList);
+          }, (err) => {
+            console.error("Incoming requests listener error:", err);
+            renderRequestsList(pendingRequestsList, outgoingRequestsList);
+            toast("無法讀取收到的申請：" + err.message);
+          });
+        friendSystemUnsubscribers.push(incomingUnsubscribe);
+
+        // Listen to outgoing Friend Requests
+        const outgoingUnsubscribe = db.collection("friend_requests")
+          .where("senderId", "==", activeUserId)
+          .onSnapshot((snapshot) => {
+            outgoingRequestsList = [];
+            snapshot.forEach(doc => {
+              const request = { id: doc.id, ...doc.data() };
+              if (request.status === "pending") {
+                outgoingRequestsList.push(request);
+              }
+            });
+            // Client-side sort
+            outgoingRequestsList.sort((a, b) => {
+              const t1 = a.createdAt ? (a.createdAt.toMillis ? a.createdAt.toMillis() : new Date(a.createdAt).getTime()) : 0;
+              const t2 = b.createdAt ? (b.createdAt.toMillis ? b.createdAt.toMillis() : new Date(b.createdAt).getTime()) : 0;
+              return t2 - t1;
+            });
+            renderRequestsList(pendingRequestsList, outgoingRequestsList);
+          }, (err) => {
+            console.error("Outgoing requests listener error:", err);
+            renderRequestsList(pendingRequestsList, outgoingRequestsList);
+            toast("無法讀取已送出的申請：" + err.message);
+          });
+        friendSystemUnsubscribers.push(outgoingUnsubscribe);
+      }
+
+      function renderFriendsList(friends) {
+        const container = document.getElementById("friendsListContainer");
+        if (currentTab !== '列表') return; // Don't overwrite if tab switched
+        
+        container.innerHTML = friends.map(f => {
+          return `
+            <div class="friend-list-item" onclick="showFriendDetail('${f.id}')" style="cursor: pointer;">
+              <div class="friend-avatar" style="background: ${f.avatarColor}22; color: ${f.avatarColor};">
+                <div class="friend-lv-badge">Lv.${Math.floor(f.prosperity/10) + 1}</div>
+                ${f.avatar}
+              </div>
+              <div class="friend-info">
+                <div class="friend-name-row">
+                  <span class="friend-name">${f.name}</span>
+                  <span class="friend-status">狀態：${f.signature}</span>
+                </div>
+                <div class="friend-stats-row">
+                  <span>🎯 星球繁榮度：${f.prosperity}%</span>
+                  <span>⏱️ 完成任務：${f.completedTasks}/${f.totalTasks}</span>
+                  <span>🏃 今日步數：${f.steps.toLocaleString()} 步</span>
+                </div>
+              </div>
+              <div class="friend-meta" style="flex-direction: row; gap: 8px; align-items: center; justify-content: flex-end; padding: 12px 16px;" onclick="event.stopPropagation();">
+                <span class="friend-last-login" style="margin-right: auto; padding-left: 10px;">${f.isStudying ? "🟢 線上專注中" : "⚪ 離線"}</span>
+                <button class="button secondary" style="padding: 6px 12px; font-size: 13px; min-height: auto; border-color: #ef4444; color: #ef4444;" onclick="deleteFriend('${f.id}', '${f.name}')">❌ 刪除</button>
+                <button class="button primary" style="padding: 6px 16px; font-size: 13px; min-height: auto;" onclick="showFriendDetail('${f.id}')">查看名片</button>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      function renderRequestsList(incoming, outgoing) {
+        incoming = incoming || [];
+        outgoing = outgoing || [];
+        const container = document.getElementById("requestsListContainer");
+
+        if (incoming.length === 0 && outgoing.length === 0) {
+          container.innerHTML = `
+            <div style="text-align:center; padding: 40px; color:#9ca3af;">
+              <div style="font-size:40px; margin-bottom:12px;">🤝</div>
+              <strong style="color:#fff;">目前沒有待確認的好友申請</strong>
+              <p style="margin: 8px 0 0; font-size:13px;">前往「好友搜尋」輸入 Nudge ID 發送邀請吧！</p>
+            </div>
+          `;
+          return;
+        }
+
+        let html = '';
+
+        // ── Section 1: Incoming ──
+        if (incoming.length > 0) {
+          html += `<div style="font-size:12px; font-weight:800; color:#9ca3af; text-transform:uppercase; letter-spacing:1px; margin-bottom:10px; margin-top:4px;">📩 收到的邀請（${incoming.length}）</div>`;
+          html += incoming.map(r => `
+            <div class="friend-list-item" style="cursor: pointer; border-color: rgba(16,185,129,0.3);" onclick="showFriendDetail('${r.senderId}')">
+              <div class="friend-avatar" style="background: rgba(16,185,129,0.08); color:#10b981; font-size: 36px;">
+                🧑‍🚀
+              </div>
+              <div class="friend-info">
+                <div class="friend-name-row">
+                  <span class="friend-name">${r.senderName}</span>
+                  <span class="friend-status" style="background:rgba(16,185,129,0.1); color:#10b981;">想加你為好友</span>
+                </div>
+                <div class="friend-stats-row">
+                  <span>ID: ${r.senderNudgeId}</span>
+                  <span>${r.senderSignature || '今天慢慢前進'}</span>
+                </div>
+              </div>
+              <div class="friend-meta" style="flex-direction: row; gap: 8px; align-items: center; justify-content: flex-end; padding: 12px 16px;" onclick="event.stopPropagation();">
+                <button class="button primary" style="padding: 8px 18px; font-size: 13px; min-height: auto; background: #10b981; border-color: #10b981; font-weight:800;" onclick="acceptFriendRequest('${r.id}')">✓ 接受</button>
+                <button class="button secondary" style="padding: 8px 14px; font-size: 13px; min-height: auto; border-color: #ef4444; color: #ef4444;" onclick="declineFriendRequest('${r.id}')">✕</button>
+              </div>
+            </div>
+          `).join('');
+        }
+
+        // ── Section 2: Outgoing ──
+        if (outgoing.length > 0) {
+          html += `<div style="font-size:12px; font-weight:800; color:#9ca3af; text-transform:uppercase; letter-spacing:1px; margin-bottom:10px; margin-top:${incoming.length > 0 ? '24px' : '4px'};">📤 已送出的邀請（${outgoing.length}）</div>`;
+          html += outgoing.map(r => `
+            <div class="friend-list-item" style="cursor: pointer; border-color: rgba(96,165,250,0.25);" onclick="showFriendDetail('${r.receiverId}')">
+              <div class="friend-avatar" style="background: rgba(96,165,250,0.08); color:#60a5fa; font-size:36px;">
+                🧑‍🚀
+              </div>
+              <div class="friend-info">
+                <div class="friend-name-row">
+                  <span class="friend-name">${r.receiverName}</span>
+                  <span class="friend-status" style="background:rgba(96,165,250,0.1); color:#60a5fa;">⏱ 等待回應</span>
+                </div>
+                <div class="friend-stats-row">
+                  <span>ID: ${r.receiverNudgeId}</span>
+                </div>
+              </div>
+              <div class="friend-meta" style="flex-direction: row; gap: 8px; align-items: center; justify-content: flex-end; padding: 12px 16px;" onclick="event.stopPropagation();">
+                <button class="button" style="padding: 7px 14px; font-size: 12px; min-height: auto; border-color: #ef4444; color: #ef4444;" onclick="cancelFriendRequest('${r.id}', '${r.receiverName}')">取消申請</button>
+                <button class="button" style="padding: 7px 14px; font-size: 12px; min-height: auto; border-color: #7c6ae6; color: #7c6ae6;" onclick="showFriendDetail('${r.receiverId}')">查看名片</button>
+              </div>
+            </div>
+          `).join('');
+        }
+
+        container.innerHTML = html;
+      }
+
+      async function acceptFriendRequest(requestId) {
+        if (!myProfile) {
+          toast("正在讀取個人資料，請稍候再試。");
+          return;
+        }
+
+        try {
+          // Always fetch fresh from Firestore — works from any context
+          const reqDoc = await db.collection("friend_requests").doc(requestId).get();
+          if (!reqDoc.exists) { toast("找不到該好友申請。"); return; }
+          const req = reqDoc.data();
+
+          if (req.status !== 'pending') {
+            toast("此申請已處理過。");
+            if (selectedFriendData) showFriendDetail(selectedFriendData.id);
+            return;
+          }
+
+          const batch = db.batch();
+          const requestRef = db.collection("friend_requests").doc(requestId);
+          batch.update(requestRef, { status: "accepted" });
+
+          // ── Write SENDER into RECEIVER's (my) friends list ──
+          const myFriendRef = db.collection("users").doc(activeUserId).collection("friends").doc(req.senderId);
+          batch.set(myFriendRef, {
+            id: req.senderId,
+            nudgeId: req.senderNudgeId || "",
+            name: req.senderName || req.senderId,
+            signature: req.senderSignature || "今天慢慢前進",
+            todayFocusSeconds: 0,
+            isStudying: false,
+            isFollowing: true,
+            encouragementCount: 0
+          });
+
+          // ── Write RECEIVER (me) into SENDER's friends list ──
+          const otherFriendRef = db.collection("users").doc(req.senderId).collection("friends").doc(activeUserId);
+          batch.set(otherFriendRef, {
+            id: activeUserId,
+            nudgeId: myProfile.myNudgeId || "",
+            name: myProfile.nickname || activeUserId,
+            signature: myProfile.signature || "今天慢慢前進",
+            todayFocusSeconds: 0,
+            isStudying: false,
+            avatarColor: 4286376678,
+            isFollowing: true,
+            encouragementCount: 0
+          });
+
+          await batch.commit();
+
+          toast(`已接受好友申請，成功與 ${req.senderName} 成為好友！`);
+          
+          if (selectedFriendData && selectedFriendData.id === req.senderId) {
+            showFriendDetail(req.senderId);
+          }
+        } catch (err) {
+          console.error("Error accepting request:", err);
+          toast("接受好友申請失敗：" + err.message);
+        }
+      }
+
+      async function declineFriendRequest(requestId) {
+        try {
+          await db.collection("friend_requests").doc(requestId).update({ status: "declined" });
+          toast("已拒絕好友申請。");
+          if (selectedFriendData) {
+            // Refresh detail view to reflect updated status
+            showFriendDetail(selectedFriendData.id);
+          }
+        } catch (err) {
+          console.error("Error declining request:", err);
+          toast("拒絕好友申請失敗");
+        }
+      }
+
+      async function cancelFriendRequest(requestId, receiverName) {
+        if (!confirm(`確定要取消發給 ${receiverName} 的好友申請嗎？`)) return;
+        try {
+          await db.collection("friend_requests").doc(requestId).update({ status: "cancelled" });
+          toast(`已取消發給 ${receiverName} 的好友申請。`);
+          if (selectedFriendData) {
+            showFriendDetail(selectedFriendData.id);
+          }
+        } catch (err) {
+          console.error("Error cancelling request:", err);
+          toast("取消好友申請失敗：" + err.message);
+        }
+      }
+
+      // Friend Search
+      async function handleSearch() {
+        const query = document.getElementById("friendSearchInput").value.trim().toUpperCase();
+        const resultsContainer = document.getElementById("searchResultsContainer");
+        if (!query) {
+          toast("請輸入 Nudge ID！");
+          return;
+        }
+
+        if (myProfile && query === myProfile.myNudgeId.toUpperCase()) {
+          resultsContainer.innerHTML = `<div style="text-align:center; padding: 20px; color:#ef4444; font-weight: bold;">不能搜尋自己！</div>`;
+          return;
+        }
+
+        resultsContainer.innerHTML = `<div style="text-align:center; padding: 20px; color:#9ca3af;">搜尋中...</div>`;
+
+        try {
+          const userSnap = await db.collection("users").where("myNudgeId", "==", query).limit(1).get();
+          
+          if (userSnap.docs.length === 0) {
+            resultsContainer.innerHTML = `<div style="text-align:center; padding: 20px; color:#9ca3af;">找不到該 Nudge ID 的使用者。</div>`;
+            return;
+          }
+
+          const userDoc = userSnap.docs[0];
+          const userData = userDoc.data();
+          const targetId = userDoc.id;
+
+          // Check if already friends
+          const friendCheck = await db.collection("users").doc(activeUserId).collection("friends").doc(targetId).get();
+          const isFriend = friendCheck.exists;
+
+          // Check if outgoing request sent
+          const outgoingCheck = await db.collection("friend_requests")
+            .where("senderId", "==", activeUserId)
+            .where("receiverId", "==", targetId)
+            .where("status", "==", "pending")
+            .get();
+          const isRequestSent = outgoingCheck.docs.length > 0;
+
+          // Check if incoming request pending
+          const incomingCheck = await db.collection("friend_requests")
+            .where("senderId", "==", targetId)
+            .where("receiverId", "==", activeUserId)
+            .where("status", "==", "pending")
+            .get();
+          const isIncomingPending = incomingCheck.docs.length > 0;
+
+          const avatar = (userData.avatarProfile && userData.avatarProfile.icon) ? userData.avatarProfile.icon : "🧑‍🚀";
+          const avatarColor = (userData.avatarProfile && userData.avatarProfile.color) ? userData.avatarProfile.color : "#7C6AE6";
+
+          let actionHtml = '';
+          if (isFriend) {
+            actionHtml = `<span style="color: #10b981; font-weight: 800;">✓ 已是好友</span><button class="button" onclick="showFriendDetail('${targetId}')" style="padding: 6px 12px; font-size: 12px; min-height: auto; margin-left: 10px; border-color: #7c6ae6; color: #7c6ae6;">查看名片</button>`;
+          } else if (isRequestSent) {
+            actionHtml = `<span style="color: #60a5fa; font-weight: 800;">⏱ 已發送好友申請</span><button class="button" onclick="showFriendDetail('${targetId}')" style="padding: 6px 12px; font-size: 12px; min-height: auto; margin-left: 10px; border-color: #7c6ae6; color: #7c6ae6;">查看名片</button>`;
+          } else if (isIncomingPending) {
+            actionHtml = `<button class="button primary" style="padding: 8px 16px; font-size: 13px; min-height: auto; background: #10b981; border-color: #10b981;" onclick="acceptFriendRequest('${incomingCheck.docs[0].id}')">接受他的申請</button><button class="button" onclick="showFriendDetail('${targetId}')" style="padding: 6px 12px; font-size: 12px; min-height: auto; margin-left: 10px; border-color: #7c6ae6; color: #7c6ae6;">查看名片</button>`;
+          } else {
+            actionHtml = `<button class="button primary" style="padding: 8px 16px; font-size: 13px; min-height: auto;" onclick="sendFriendRequest('${targetId}', '${query}', '${userData.nickname}')">加為好友</button><button class="button" onclick="showFriendDetail('${targetId}')" style="padding: 6px 12px; font-size: 12px; min-height: auto; margin-left: 10px; border-color: #7c6ae6; color: #7c6ae6;">查看名片</button>`;
+          }
+
+          resultsContainer.innerHTML = `
+            <div class="friend-list-item" style="cursor: pointer; margin-top: 15px;" onclick="showFriendDetail('${targetId}')">
+              <div class="friend-avatar" style="background: ${avatarColor}22; color: ${avatarColor};">
+                ${avatar}
+              </div>
+              <div class="friend-info">
+                <div class="friend-name-row">
+                  <span class="friend-name">${userData.nickname}</span>
+                  <span class="friend-status">ID: ${query}</span>
+                </div>
+                <div class="friend-stats-row">
+                  <span>個性簽名：${userData.signature || "今天慢慢前進"}</span>
+                </div>
+              </div>
+              <div class="friend-meta" style="align-items: flex-end; justify-content: center; padding: 12px 16px;" onclick="event.stopPropagation();">
+                ${actionHtml}
+              </div>
+            </div>
+          `;
+        } catch (err) {
+          console.error("Search failed:", err);
+          resultsContainer.innerHTML = `<div style="text-align:center; padding: 20px; color:#ef4444;">搜尋出錯：${err.message}</div>`;
+        }
+      }
+
+      async function sendFriendRequest(targetId, targetNudgeId, targetName) {
+        if (!myProfile) {
+          toast("正在讀取個人資料，請稍候再發送。");
+          return;
+        }
+
+        try {
+          const reqId = `req_${activeUserId}_${targetId}`;
+          await db.collection("friend_requests").doc(reqId).set({
+            senderId: activeUserId,
+            senderNudgeId: myProfile.myNudgeId || myProfile.username || myProfile.nudgeId || `NDG_${activeUserId.substring(0,6)}`,
+            senderName: myProfile.nickname || myProfile.name || activeUserId,
+            senderSignature: myProfile.signature || "今天慢慢前進",
+            receiverId: targetId,
+            receiverNudgeId: targetNudgeId || "",
+            receiverName: targetName || targetId,
+            receiverSignature: "",
+            status: "pending",
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+
+          toast("好友申請已發送！");
+          
+          if (selectedFriendData && selectedFriendData.id === targetId) {
+            showFriendDetail(targetId);
+          } else {
+            handleSearch();
+          }
+        } catch (err) {
+          console.error("Failed to send request:", err);
+          toast("發送好友申請失敗：" + err.message);
+        }
+      }
+
+      async function encourageFriend(friendId, friendName) {
+        toast("👍 已給 " + friendName + " 按讚！");
+        try {
+          const friendRef = db.collection("users").doc(activeUserId).collection("friends").doc(friendId);
+          const friendSnap = await friendRef.get();
+          if (friendSnap.exists) {
+            const currentCount = friendSnap.data().encouragementCount || 0;
+            await friendRef.update({
+              encouragementCount: currentCount + 1
+            });
+          }
+          const likeBtn = document.querySelector("#friendProfileActions .button.success");
+          if (likeBtn) {
+            likeBtn.textContent = "✅ 已按讚";
+            likeBtn.disabled = true;
+            likeBtn.style.opacity = "0.6";
+            likeBtn.style.pointerEvents = "none";
+          }
+        } catch (err) {
+          console.warn("Failed to increment encouragement count in Firestore:", err);
+        }
+      }
+
+      async function deleteFriend(friendId, friendName) {
+        if (!confirm(`確定要刪除好友 ${friendName} 嗎？`)) return;
+        try {
+          await db.collection("users").doc(activeUserId).collection("friends").doc(friendId).delete();
+          await db.collection("users").doc(friendId).collection("friends").doc(activeUserId).delete();
+          toast(`已刪除好友 ${friendName}。`);
+          
+          if (document.getElementById('friendDetailView').style.display === 'block') {
+            showFriendList();
+          }
+        } catch (err) {
+          console.error("Failed to delete friend:", err);
+          toast("刪除好友失敗：" + err.message);
+        }
+      }
+
+      // Details view binding
+      function showFriendDetail(friendId) {
+        document.getElementById('friendHeroHeader').style.display = 'none';
+        document.getElementById('friendListView').style.display = 'none';
+        document.getElementById('friendDetailView').style.display = 'block';
+        document.getElementById('friendDetailView').scrollTop = 0;
+        document.getElementById('friendDetailBackTitle').textContent = '好友名片';
+        document.getElementById('friendMainName').textContent = "讀取中...";
+        document.getElementById('friendMainSignature').textContent = "讀取資料中，請稍候...";
+        document.getElementById('friendProfileActions').innerHTML = "";
+        // subnav always visible; right-col shows loading
+        document.getElementById('friendSubNav').querySelectorAll('a').forEach((a,i) => { a.classList.toggle('active', i===0); });
+        document.getElementById('friendRightColumn').innerHTML = `<div style="text-align:center; padding: 60px 20px; color:#9ca3af;">正在載入好友名片...</div>`;
+
+        db.collection("users").doc(friendId).get().then(async (docSnap) => {
+          if (!docSnap.exists) {
+            toast("找不到該使用者的資料！");
+            showFriendList();
+            return;
+          }
+          const userData = docSnap.data();
+          
+          const avatar = (userData.avatarProfile && userData.avatarProfile.icon) ? userData.avatarProfile.icon : "🧑‍🚀";
+          const avatarColor = (userData.avatarProfile && userData.avatarProfile.color) ? userData.avatarProfile.color : "#7C6AE6";
+          const name = userData.nickname || friendId;
+          const nudgeId = userData.myNudgeId || "NDG-USER";
+          const signature = userData.signature || "今天慢慢前進";
+          const planetCount = userData.planetCount || (userData.unlockedPlanets ? userData.unlockedPlanets.length : 3);
+          const unlockedPlanets = userData.unlockedPlanets || [];
+          const friendTasks = userData.tasks || [];
+          const completedTasks = friendTasks.filter(t => t.isDone || t.done).length;
+          const totalTasks = friendTasks.length;
+          const prosperity = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+          
+          let sleepHours = 8.0;
+          let steps = 0;
+          let exerciseMinutes = 0;
+          if (userData.dailySummaries && userData.dailySummaries.length > 0) {
+            const latest = userData.dailySummaries[userData.dailySummaries.length - 1];
+            sleepHours = latest.sleepHours || sleepHours;
+            steps = latest.steps || steps;
+            exerciseMinutes = latest.exerciseMinutes || exerciseMinutes;
+          }
+          
+          selectedFriendData = {
+            id: friendId,
+            name: name,
+            nudgeId: nudgeId,
+            signature: signature,
+            avatar: avatar,
+            avatarColor: avatarColor,
+            prosperity: prosperity,
+            completedTasks: completedTasks,
+            totalTasks: totalTasks,
+            sleepHours: sleepHours,
+            steps: steps,
+            exerciseMinutes: exerciseMinutes,
+            todayFocusSeconds: userData.focusSeconds || 0,
+            tasks: friendTasks,
+            planetCount: planetCount,
+            unlockedPlanets: unlockedPlanets,
+            isStudying: userData.isStudying || false,
+            unlockedBadges: userData.unlockedBadges || []
+          };
+
+          // Update back bar title with friend's name
+          document.getElementById('friendDetailBackTitle').textContent = name;
+
+          // Render basic cover elements
+          document.getElementById('friendMainName').textContent = name;
+          document.getElementById('friendMainSignature').textContent = `"${signature}"`;
+          const friendMainAvatarEl = document.getElementById('friendMainAvatar');
+          if (userData.avatarProfile && typeof userData.avatarProfile.avatarIconIndex === 'number') {
+            friendMainAvatarEl.innerHTML = `<img src="assets/avatar/icons/icon_${userData.avatarProfile.avatarIconIndex}.png" style="width:100%; height:100%; object-fit:cover; border-radius:50%;" />`;
+            friendMainAvatarEl.style.background = avatarColor + "22";
+          } else {
+            friendMainAvatarEl.textContent = avatar;
+            friendMainAvatarEl.style.background = avatarColor + "22";
+            friendMainAvatarEl.style.color = avatarColor;
+          }
+          document.getElementById('friendNudgeId').textContent = nudgeId;
+          document.getElementById('friendOnlineStatus').textContent = selectedFriendData.isStudying ? "🟢 線上專注中" : "⚪ 離線";
+          document.getElementById('friendOnlineStatus').style.color = selectedFriendData.isStudying ? "#10b981" : "#64748b";
+          document.getElementById('friendVisitorName').textContent = name;
+          const prosperityEl = document.getElementById('friendProsperityInfo');
+          if (prosperityEl) prosperityEl.textContent = prosperity + '%';
+          
+          // Render Badges
+          document.getElementById('friendUnlockedBadges').innerHTML = renderFriendBadges(userData);
+          
+          const banner = document.getElementById('friendCoverBanner');
+          if (banner) {
+            banner.style.background = `linear-gradient(135deg, ${avatarColor} 0%, #1e144a 50%, #03050a 100%)`;
+          }
+          
+          // Determine relationship status
+          const friendCheck = await db.collection("users").doc(activeUserId).collection("friends").doc(friendId).get();
+          const isFriend = friendCheck.exists;
+          
+          let isRequestSent = false;
+          let outgoingReqId = `req_${activeUserId}_${friendId}`;
+          const outgoingDoc = await db.collection("friend_requests").doc(outgoingReqId).get();
+          if (outgoingDoc.exists && outgoingDoc.data().status === 'pending') {
+            isRequestSent = true;
+          }
+          
+          let isIncomingPending = false;
+          let incomingReqId = `req_${friendId}_${activeUserId}`;
+          const incomingDoc = await db.collection("friend_requests").doc(incomingReqId).get();
+          if (incomingDoc.exists && incomingDoc.data().status === 'pending') {
+            isIncomingPending = true;
+          }
+          
+          const actionsContainer = document.getElementById('friendProfileActions');
+          const rightColumn = document.getElementById('friendRightColumn');
+          const badge = document.getElementById('friendMainBadge');
+
+          // ── Stat tags (always shown like profile.html) ──
+          const planetsParam = JSON.stringify(unlockedPlanets).replace(/"/g, '&quot;');
+          let statTagsHtml = `
+            <div class="fb-stat-tag planets"><span>🪐</span> <span>${planetCount} 顆星球</span></div>
+            <div class="fb-stat-tag coins"><span>🌟</span> <span>${prosperity}% 繁榮</span></div>
+          `;
+          
+          // ── Relation badge + action buttons ──
+          if (isFriend) {
+            badge.innerHTML = "🏆 好友";
+            badge.style.background = "rgba(16,185,129,0.12)";
+            badge.style.borderColor = "rgba(16,185,129,0.25)";
+            badge.style.color = "#10b981";
+            actionsContainer.innerHTML = statTagsHtml + `
+              <button class="button primary" style="font-weight:700; border-radius:12px; padding:10px 18px; background:linear-gradient(135deg,#a855f7,#7c6ae6);" onclick="showFriendPlanetModal('${name}', ${planetCount}, ${planetsParam})">🪐 進入自律星球</button>
+              <button class="button success" style="font-weight:700; border-radius:12px; padding:10px 18px; background:#10b981; border:none; color:#fff;" onclick="encourageFriend('${friendId}', '${name}')">👍 給他按讚</button>
+              <button class="button" style="font-weight:700; border-radius:12px; padding:10px 18px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.4); color:#ef4444;" onclick="deleteFriend('${friendId}', '${name}')">❌ 刪除好友</button>
+            `;
+          } else {
+            badge.innerHTML = "🛸 未加好友";
+            badge.style.background = "rgba(245,158,11,0.12)";
+            badge.style.borderColor = "rgba(245,158,11,0.25)";
+            badge.style.color = "#f59e0b";
+            if (isRequestSent) {
+              actionsContainer.innerHTML = statTagsHtml + `
+                <button class="button secondary" style="font-weight:700; border-radius:12px; padding:10px 18px; opacity:0.7;" disabled>⏱ 已發送好友申請</button>
+              `;
+            } else if (isIncomingPending) {
+              actionsContainer.innerHTML = statTagsHtml + `
+                <button class="button success" style="font-weight:700; border-radius:12px; padding:10px 18px; background:#10b981; border:none; color:#fff;" onclick="acceptFriendRequest('${incomingReqId}')">✓ 接受申請</button>
+                <button class="button" style="font-weight:700; border-radius:12px; padding:10px 18px; background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.4); color:#ef4444;" onclick="declineFriendRequest('${incomingReqId}')">拒絕</button>
+              `;
+            } else {
+              actionsContainer.innerHTML = statTagsHtml + `
+                <button class="button primary" style="font-weight:700; border-radius:12px; padding:10px 18px;" onclick="sendFriendRequest('${friendId}', '${nudgeId}', '${name}')">➕ 加為好友</button>
+              `;
+            }
+          }
+
+          // ── Subnav: always visible; right column: unlocked for friends/pending, locked otherwise ──
+          const showDetails = isFriend || isIncomingPending;
+          detailActiveTab = 'timeline';
+          document.getElementById('friendSubNav').querySelectorAll('a').forEach((a,i) => { a.classList.toggle('active', i===0); });
+
+          if (showDetails) {
+            // Fetch friend messages
+            try {
+              const msgsSnap = await db.collection("friend_messages")
+                .where("receiverId", "==", friendId)
+                .orderBy("createdAt", "desc")
+                .limit(20)
+                .get();
+              selectedFriendData.messages = msgsSnap.docs.map(d => ({id: d.id, ...d.data()}));
+            } catch (err) {
+              console.error("Error fetching messages:", err);
+              selectedFriendData.messages = [];
+            }
+            rightColumn.innerHTML = renderFriendTimeline(selectedFriendData);
+          } else {
+            rightColumn.innerHTML = `
+              <div class="fb-card" style="text-align:center; padding:60px 40px; display:flex; flex-direction:column; align-items:center; gap:16px;">
+                <div style="font-size:54px;">🔒</div>
+                <h3 style="margin:0; color:#fff; font-size:18px;">內容已鎖定</h3>
+                <p style="color:var(--muted); font-size:14px; max-width:320px; margin:0; line-height:1.6;">
+                  加為好友後即可查看對方的自律行星與專注動態。
+                </p>
+                ${ !isRequestSent ? `<button class="button primary" style="font-weight:700; border-radius:12px; padding:10px 20px;" onclick="sendFriendRequest('${friendId}','${nudgeId}','${name}')">➕ 加為好友</button>` : '' }
+              </div>
+            `;
+          }
+          
+          document.getElementById('friendDetailView').scrollTop = 0;
+        }).catch(err => {
+          console.error("Error loading friend detail:", err);
+          toast("載入好友詳細名片出錯：" + err.message);
+        });
+      }
+
+      function showFriendList() {
+        document.getElementById('friendDetailView').style.display = 'none';
+        document.getElementById('friendHeroHeader').style.display = '';
+        document.getElementById('friendListView').style.display = 'block';
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+
+      function switchFriendDetailTab(tab, element) {
+        if (!selectedFriendData) return;
+        detailActiveTab = tab;
+        
+        const subNav = document.getElementById("friendSubNav");
+        if (subNav) {
+          subNav.querySelectorAll("a").forEach(a => a.classList.remove("active"));
+        }
+        if (element) {
+          element.classList.add("active");
+        }
+        
+        const rightCol = document.getElementById("friendRightColumn");
+        if (rightCol) {
+          if (tab === 'timeline') {
+            rightCol.innerHTML = renderFriendTimeline(selectedFriendData);
+          } else if (tab === 'about') {
+            rightCol.innerHTML = renderFriendAbout(selectedFriendData);
+          } else if (tab === 'progress') {
+            rightCol.innerHTML = renderFriendProgress(selectedFriendData);
+          }
+        }
+      }
+
+      function renderFriendTimeline(friendData) {
+        const completedTasks = (friendData.tasks || []).filter(t => t.isDone || t.done);
+        const messages = friendData.messages || [];
+        
+        // Combine tasks and messages
+        let feedItems = [];
+        completedTasks.forEach(t => {
+          feedItems.push({
+            type: 'task',
+            title: t.title,
+            timestamp: t.completedAt ? new Date(t.completedAt).getTime() : new Date().getTime(),
+            dateObj: t.completedAt ? new Date(t.completedAt) : new Date()
+          });
+        });
+        messages.forEach(m => {
+          feedItems.push({
+            type: 'message',
+            msgType: m.type || 'text', // 'text', 'cheer', 'gift'
+            content: m.content,
+            senderName: m.senderName,
+            senderAvatar: m.senderAvatar || '🧑‍🚀',
+            timestamp: m.createdAt ? new Date(m.createdAt).getTime() : new Date().getTime(),
+            dateObj: m.createdAt ? new Date(m.createdAt) : new Date()
+          });
+        });
+        
+        feedItems.sort((a, b) => b.timestamp - a.timestamp);
+        
+        // Facebook Style What's On Your Mind input card for friends
+        const activeUserName = localStorage.getItem("nudgeActiveDemoUserName") || "我";
+        
+        let activeUserAvatarHtml = `<div class="fb-mini-avatar" style="width: 40px; height: 40px; border-radius: 50%; background: var(--page-accent, #7c6ae6); display: flex; align-items: center; justify-content: center; font-weight: 800; color: #fff; font-size: 16px;">${activeUserName.charAt(0)}</div>`;
+        if (myProfile && myProfile.avatarProfile && typeof myProfile.avatarProfile.avatarIconIndex === 'number') {
+          activeUserAvatarHtml = `<div class="fb-mini-avatar" style="width: 40px; height: 40px; border-radius: 50%;"><img src="assets/avatar/icons/icon_${myProfile.avatarProfile.avatarIconIndex}.png" style="width:100%; height:100%; object-fit:cover; border-radius:50%;" /></div>`;
+        }
+        
+        let headerHtml = `
+          <div class="fb-create-post-card" style="margin-bottom: 20px;">
+            <div class="fb-create-post-top" style="display: flex; align-items: center; gap: 12px;">
+              ${activeUserAvatarHtml}
+              <input type="text" id="friendMsgInput" placeholder="給 ${friendData.name} 留句打氣語..." style="flex: 1; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 20px; padding: 10px 16px; color: #fff; font-size: 14px; outline: none; transition: background 0.2s;" onkeypress="if(event.key === 'Enter') sendFriendMessage('${friendData.id}', 'text', this.value)"/>
+            </div>
+            <div class="fb-create-post-actions" style="border-top: 1px solid rgba(255, 255, 255, 0.06); padding-top: 10px; display: flex; justify-content: flex-start; gap: 16px; margin-top: 12px; padding-left: 8px;">
+              <button class="fb-post-action-btn" onclick="sendFriendMessage('${friendData.id}', 'cheer', '你的自律星球太閃耀了！繼續加油！✨')" style="display: flex; align-items: center; gap: 8px; background: transparent; border: none; color: var(--muted); font-weight: 700; font-size: 13px; cursor: pointer; padding: 8px 12px; border-radius: 8px;">
+                <span style="color: #7c6ae6;">👏</span> 發送打氣
+              </button>
+            </div>
+          </div>
+        `;
+
+        if (feedItems.length === 0) {
+          return headerHtml + `
+            <div class="fb-empty-feed" style="text-align: center; padding: 40px 20px; color: var(--muted);">
+              <span class="icon" style="font-size: 48px; margin-bottom: 12px; display: block; opacity: 0.6;">📭</span>
+              <strong>尚無動態與留言</strong>
+              <p>成為第一個在留言板上打氣的人吧！</p>
+            </div>
+          `;
+        }
+        
+        const feedHtml = feedItems.map(item => {
+          const compTime = item.dateObj.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+          
+          if (item.type === 'task') {
+            return `
+              <div class="fb-post-card" style="margin-bottom: 16px;">
+                <div class="fb-post-header">
+                  <div class="fb-post-author-info">
+                    <div class="fb-mini-avatar" style="background: ${friendData.avatarColor || '#7c6ae6'};">${friendData.avatar || '🧑‍🚀'}</div>
+                    <div>
+                      <span class="fb-post-author-name">${friendData.name}</span>
+                      <span class="fb-post-time">完成於 ${compTime}</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="fb-post-content">我完成了一項自律任務：<strong>${item.title}</strong>！繼續加油，打造完美的自律星球。 ✨</div>
+              </div>
+            `;
+          } else {
+            // message / cheer
+            const icon = item.msgType === 'cheer' ? '👏' : '💬';
+            return `
+              <div class="fb-post-card" style="margin-bottom: 16px; background: rgba(124,106,230,0.05); border: 1px solid rgba(124,106,230,0.15);">
+                <div class="fb-post-header">
+                  <div class="fb-post-author-info">
+                    <div class="fb-mini-avatar" style="background: #1e144a;">${item.senderAvatar}</div>
+                    <div>
+                      <span class="fb-post-author-name">${item.senderName}</span>
+                      <span class="fb-post-time">${compTime} 留下了打氣</span>
+                    </div>
+                  </div>
+                  <div style="font-size: 24px;">${icon}</div>
+                </div>
+                <div class="fb-post-content" style="font-style: italic;">「${item.content}」</div>
+              </div>
+            `;
+          }
+        }).join('');
+        
+        return headerHtml + feedHtml;
+      }
+
+      // New function to handle sending messages / gifts
+      async function sendFriendMessage(friendId, type, defaultContent = '') {
+        const inputEl = document.getElementById('friendMsgInput');
+        let content = type === 'text' ? inputEl.value.trim() : defaultContent;
+        if (!content) return;
+        
+        const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+        const activeUserName = localStorage.getItem("nudgeActiveDemoUserName") || "我";
+        
+
+
+        try {
+          // Record message
+          await db.collection("friend_messages").add({
+            receiverId: friendId,
+            senderId: activeUserId,
+            senderName: activeUserName,
+            senderAvatar: "🧑‍🚀", // Default or fetch real one
+            content: content,
+            type: type,
+            createdAt: new Date().toISOString()
+          });
+          
+          toast("打氣留言已送出！✨");
+          if (inputEl) inputEl.value = '';
+          
+          // Refresh the detail view softly
+          showFriendDetail(friendId);
+          
+        } catch (err) {
+          console.error("發送留言失敗:", err);
+          toast("發送失敗：" + err.message);
+        }
+      }
+
+      function renderFriendAbout(friendData) {
+        return `
+          <article class="fb-card">
+            <h3 class="fb-card-title">關於 ${friendData.name}</h3>
+            <p style="color: #fff; font-size: 14px; text-align: left; line-height: 1.6; margin: 0;">
+              <strong>自我介紹：</strong> ${friendData.signature || '這個人很懶，什麼都沒留下。'}<br><br>
+              <strong>自律宣言：</strong> 每天前進一點點，自律生活從今天開始！在 Nudge 星系中持續努力，點亮屬於自己的那一顆星球。 🪐
+            </p>
+          </article>
+        `;
+      }
+
+      function renderFriendProgress(friendData) {
+        const focusMin = Math.round((friendData.todayFocusSeconds || 0) / 60);
+        const steps = friendData.steps || 0;
+        const exerciseMin = friendData.exerciseMinutes || 0;
+        const sleepHours = friendData.sleepHours || 7.5;
+        
+        return `
+          <div class="fb-post-metrics-grid" style="grid-template-columns: repeat(2, 1fr); gap: 16px;">
+            <div class="fb-metric-pill focus">
+              <div class="icon">⏱️</div>
+              <div class="fb-metric-details">
+                <span class="fb-metric-label">今日專注時間</span>
+                <span class="fb-metric-val">${focusMin} 分鐘</span>
+              </div>
+            </div>
+            <div class="fb-metric-pill steps">
+              <div class="icon">👟</div>
+              <div class="fb-metric-details">
+                <span class="fb-metric-label">今日步數</span>
+                <span class="fb-metric-val">${steps.toLocaleString()} 步</span>
+              </div>
+            </div>
+            <div class="fb-metric-pill sleep">
+              <div class="icon">🌙</div>
+              <div class="fb-metric-details">
+                <span class="fb-metric-label">昨晚睡眠狀況</span>
+                <span class="fb-metric-val">${sleepHours} 小時</span>
+              </div>
+            </div>
+            <div class="fb-metric-pill tasks">
+              <div class="icon">🏃</div>
+              <div class="fb-metric-details">
+                <span class="fb-metric-label">今日運動時間</span>
+                <span class="fb-metric-val">${exerciseMin} 分鐘</span>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      function renderFriendBadges(userData) {
+        const badges = userData.unlockedBadges || [];
+        if (badges.length === 0) {
+          // Default mock badges if none
+          return `
+            <div class="badge-item">
+              <span class="badge-icon">🏅</span>
+              <span class="badge-name">專注新星</span>
+            </div>
+            <div class="badge-item">
+              <span class="badge-icon">🏃</span>
+              <span class="badge-name">活力慢跑</span>
+            </div>
+            <div class="badge-item">
+              <span class="badge-icon">🌙</span>
+              <span class="badge-name">早睡早起</span>
+            </div>
+          `;
+        }
+        return badges.map(b => `
+          <div class="badge-item">
+            <span class="badge-icon">${b.icon || '🏅'}</span>
+            <span class="badge-name">${b.name || '勳章'}</span>
+          </div>
+        `).join('');
+      }
+
+      // CSS animated orbits friend-planet-modal-overlay viewer
+      function showFriendPlanetModal(friendName, planetCount, unlockedPlanets) {
+        const modal = document.getElementById("friendPlanetModal");
+        document.getElementById("modalPlanetTitle").textContent = `${friendName} 的自律星系`;
+        
+        const count = planetCount || 3;
+        const list = unlockedPlanets && unlockedPlanets.length > 0 ? unlockedPlanets : Array.from({length: count}, (_, i) => ({
+          name: `自律子星 ${i + 1}`,
+          type: ["🌍", "🪐", "☄️", "🌕", "🛸", "⭐", "🔮"][i % 7],
+          level: Math.floor(Math.random() * 5) + 1
+        }));
+        
+        document.getElementById("modalPlanetSub").textContent = `繁榮度：LV. ${Math.floor(count*1.5) + 1} | 擁有 ${list.length} 顆自律行星環繞`;
+        
+        const stage = document.getElementById("modalPlanetStage");
+        // Keep the sun
+        stage.innerHTML = '<div class="friend-planet-sun"></div>';
+        
+        const planetGradients = [
+          'radial-gradient(circle at 30% 30%, #60a5fa 0%, #1d4ed8 100%)', // blue
+          'radial-gradient(circle at 30% 30%, #34d399 0%, #047857 100%)', // green
+          'radial-gradient(circle at 30% 30%, #fbbf24 0%, #b45309 100%)', // amber
+          'radial-gradient(circle at 30% 30%, #f472b6 0%, #be185d 100%)', // pink
+          'radial-gradient(circle at 30% 30%, #a78bfa 0%, #6d28d9 100%)', // violet
+          'radial-gradient(circle at 30% 30%, #f87171 0%, #b91c1c 100%)', // red
+          'radial-gradient(circle at 30% 30%, #22d3ee 0%, #0891b2 100%)', // cyan
+        ];
+
+	        list.forEach((planet, index) => {
+	          const orbitDiameter = 120 + index * 70; // 120px, 190px, 260px, etc.
+
+	          const orbit = document.createElement("div");
+	          orbit.className = "friend-planet-orbit";
+	          orbit.style.width = `${orbitDiameter}px`;
+	          orbit.style.height = `${orbitDiameter}px`;
+          
+          const node = document.createElement("div");
+          node.className = "friend-planet-node";
+          node.style.top = "0";
+          node.style.left = "50%";
+          
+          const size = 26 + (index % 3) * 4; // 26px, 30px, 34px
+          const gradient = planetGradients[index % planetGradients.length];
+          
+          node.innerHTML = `
+            <div style="width: ${size}px; height: ${size}px; background: ${gradient}; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: ${size * 0.55}px; box-shadow: 0 0 15px rgba(255,255,255,0.15), inset -3px -3px 6px rgba(0,0,0,0.4); position: relative;">
+              <span style="position: absolute; pointer-events: none;">${planet.type || '🪐'}</span>
+              <div style="position: absolute; bottom: -24px; left: 50%; transform: translateX(-50%) rotate(0deg); background: rgba(3, 5, 10, 0.9); color: #fff; padding: 2px 6px; border-radius: 6px; font-size: 9px; white-space: nowrap; border: 1px solid rgba(255,255,255,0.1); pointer-events: none; box-shadow: 0 4px 10px rgba(0,0,0,0.5);">
+                ${planet.name} (Lv.${planet.level || 1})
+              </div>
+            </div>
+          `;
+          
+          orbit.appendChild(node);
+          stage.appendChild(orbit);
+        });
+        
+        modal.classList.add("active");
+      }
+      
+      function closeFriendPlanetModal() {
+        document.getElementById("friendPlanetModal").classList.remove("active");
+      }
+
+      // Initialize trigger
+      document.addEventListener('firebase-ready', () => {
+        initFirestoreFriendSystem();
+      });
+
+      // Bind search event listeners
+      function bootFriendPage() {
+        const btn = document.getElementById("friendSearchBtn");
+        const input = document.getElementById("friendSearchInput");
+        if (btn) btn.addEventListener("click", handleSearch);
+        if (input) input.addEventListener("keypress", (e) => {
+          if (e.key === "Enter") handleSearch();
+        });
+
+        // If firebase is already loaded
+        if (typeof db !== 'undefined' && db && localStorage.getItem("nudgeActiveDemoUserId")) {
+          initFirestoreFriendSystem();
+        }
+
+        setTimeout(() => {
+          const list = document.getElementById("friendsListContainer");
+          const requests = document.getElementById("requestsListContainer");
+          const listStillLoading = list && list.textContent.includes("正在載入好友清單");
+          const requestsStillLoading = requests && requests.textContent.includes("正在載入好友申請");
+          if (!listStillLoading && !requestsStillLoading) return;
+
+          if (friendSystemInitializedFor) {
+            if (listStillLoading) renderFriendsList(friendsList);
+            if (requestsStillLoading) renderRequestsList(pendingRequestsList, outgoingRequestsList);
+          } else {
+            renderFriendLoginRequired();
+          }
+        }, 6000);
+      }
+
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", bootFriendPage);
+      } else {
+        bootFriendPage();
+      }
+    </script>
+    <script src="assets/app.js?v=12"></script>
+  </body>
+</html>

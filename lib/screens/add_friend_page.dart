@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../models/avatar_profile.dart';
 import '../models/friend_request.dart';
 import '../models/social_friend_profile.dart';
+import '../models/study_room_models.dart';
 import '../state/app_state.dart';
 import '../theme/app_ui.dart';
 import '../widgets/avatar_preview.dart';
+import 'friend_public_profile_page.dart';
 
 class AddFriendPage extends StatefulWidget {
   const AddFriendPage({super.key});
@@ -27,11 +30,29 @@ class _AddFriendPageState extends State<AddFriendPage> {
     super.dispose();
   }
 
-  void _search(AppState appState) {
+  bool _searching = false;
+
+  Future<void> _search(AppState appState) async {
+    final query = _idController.text.trim();
+    if (query.isEmpty) return;
     setState(() {
       _searched = true;
-      _candidate = appState.findFriendCandidateByNudgeId(_idController.text);
+      _searching = true;
+      _candidate = null;
     });
+
+    try {
+      final candidate = await appState.searchFriendByNudgeId(query);
+      setState(() {
+        _candidate = candidate;
+      });
+    } catch (e) {
+      debugPrint('Search error: $e');
+    } finally {
+      setState(() {
+        _searching = false;
+      });
+    }
   }
 
   Future<void> _sendRequest(AppState appState) async {
@@ -71,15 +92,46 @@ class _AddFriendPageState extends State<AddFriendPage> {
             controller: _idController,
             candidate: _candidate,
             searched: _searched,
+            searching: _searching,
             accentColor: accentColor,
             primaryText: primaryText,
             secondaryText: secondaryText,
             onSearch: () => _search(appState),
             onSendRequest: () => _sendRequest(appState),
             onScannerTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('QR 掃描會在接後端與相機套件時開放')),
-              );
+              final messenger = ScaffoldMessenger.of(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => Scaffold(
+                    appBar: AppBar(title: const Text('掃描好友 QR Code')),
+                    body: MobileScanner(
+                      onDetect: (capture) {
+                        final List<Barcode> barcodes = capture.barcodes;
+                        if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
+                          final String code = barcodes.first.rawValue!;
+                          Navigator.pop(context, code);
+                        }
+                      },
+                    ),
+                  ),
+                ),
+              ).then((result) async {
+                if (result != null && result is String) {
+                  final candidate = await appState.searchFriendFromInvite(result);
+                  if (candidate != null) {
+                    setState(() {
+                      _searched = true;
+                      _candidate = candidate;
+                      _idController.text = candidate.nudgeId;
+                    });
+                  } else {
+                    messenger.showSnackBar(
+                      const SnackBar(content: Text('無效的邀請連結或找不到該使用者')),
+                    );
+                  }
+                }
+              });
             },
           ),
           const SizedBox(height: AppUI.sectionGap),
@@ -222,6 +274,7 @@ class _SearchByIdCard extends StatelessWidget {
   final TextEditingController controller;
   final SocialFriendProfile? candidate;
   final bool searched;
+  final bool searching;
   final Color accentColor;
   final Color primaryText;
   final Color secondaryText;
@@ -233,6 +286,7 @@ class _SearchByIdCard extends StatelessWidget {
     required this.controller,
     required this.candidate,
     required this.searched,
+    required this.searching,
     required this.accentColor,
     required this.primaryText,
     required this.secondaryText,
@@ -287,9 +341,15 @@ class _SearchByIdCard extends StatelessWidget {
             children: [
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: onSearch,
-                  icon: const Icon(Icons.person_search_rounded),
-                  label: const Text('搜尋 ID'),
+                  onPressed: searching ? null : onSearch,
+                  icon: searching
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.person_search_rounded),
+                  label: Text(searching ? '搜尋中...' : '搜尋 ID'),
                   style: FilledButton.styleFrom(
                     backgroundColor: accentColor,
                     padding: const EdgeInsets.symmetric(vertical: 13),
@@ -327,58 +387,130 @@ class _CandidateCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final appState = context.watch<AppState>();
     final primaryText = AppUI.textPrimaryOf(context);
     final secondaryText = AppUI.textSecondaryOf(context);
 
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppUI.isDark(context)
-            ? Colors.white.withValues(alpha: 0.06)
-            : const Color(0xFFF8FAFC),
+    final isFriend = appState.socialFriends.any((f) => f.id == candidate.id);
+    final incoming = appState.incomingFriendRequests.where(
+      (req) => req.id.contains(candidate.id) || req.nudgeId.toUpperCase() == candidate.nudgeId.toUpperCase()
+    ).toList();
+    final hasIncoming = incoming.isNotEmpty;
+    final outgoing = appState.outgoingFriendRequests.where(
+      (req) => req.id.contains(candidate.id) || req.nudgeId.toUpperCase() == candidate.nudgeId.toUpperCase()
+    ).toList();
+    final hasOutgoing = outgoing.isNotEmpty;
+
+    Widget actionWidget;
+    if (isFriend) {
+      actionWidget = const Text(
+        '已是好友',
+        style: TextStyle(
+          color: Colors.green,
+          fontWeight: FontWeight.bold,
+          fontSize: 14,
+        ),
+      );
+    } else if (hasOutgoing) {
+      actionWidget = Text(
+        '已邀請',
+        style: TextStyle(
+          color: appState.currentIconColor,
+          fontWeight: FontWeight.bold,
+          fontSize: 14,
+        ),
+      );
+    } else if (hasIncoming) {
+      actionWidget = FilledButton(
+        onPressed: () => appState.acceptFriendRequest(incoming.first.id),
+        style: FilledButton.styleFrom(
+          backgroundColor: Colors.green,
+        ),
+        child: const Text('接受'),
+      );
+    } else {
+      actionWidget = FilledButton(
+        onPressed: onSendRequest,
+        child: const Text('邀請'),
+      );
+    }
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
         borderRadius: BorderRadius.circular(18),
-      ),
-      child: Row(
-        children: [
-          AvatarPreview(
-            profile: candidate.avatarProfile ?? AvatarProfile.initial(),
-            size: 58,
-            showBackgroundRing: true,
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  candidate.name,
-                  style: TextStyle(
-                    color: primaryText,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  candidate.nudgeId,
-                  style: TextStyle(
-                    color: secondaryText,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  candidate.signature,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: secondaryText, fontSize: 12),
-                ),
-              ],
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => FriendPublicProfilePage(
+                friendId: candidate.id,
+                name: candidate.name,
+                signature: candidate.signature,
+                todayFocusSeconds: candidate.todayFocusSeconds,
+                score: (35 + (candidate.todayFocusSeconds / 60 / 2)).clamp(0, 100).round(),
+                isStudying: candidate.isStudying,
+                avatarColor: candidate.avatarColor,
+                avatarProfile: candidate.avatarProfile,
+                memberStatus: candidate.isStudying
+                    ? StudyMemberStatus.studying
+                    : StudyMemberStatus.offline,
+              ),
             ),
+          );
+        },
+        child: Ink(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: AppUI.isDark(context)
+                ? Colors.white.withValues(alpha: 0.06)
+                : const Color(0xFFF8FAFC),
+            borderRadius: BorderRadius.circular(18),
           ),
-          FilledButton(onPressed: onSendRequest, child: const Text('邀請')),
-        ],
+          child: Row(
+            children: [
+              AvatarPreview(
+                profile: candidate.avatarProfile ?? AvatarProfile.initial(),
+                size: 58,
+                showBackgroundRing: true,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      candidate.name,
+                      style: TextStyle(
+                        color: primaryText,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      candidate.nudgeId,
+                      style: TextStyle(
+                        color: secondaryText,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      candidate.signature,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: secondaryText, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              actionWidget,
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -464,55 +596,82 @@ class _RequestTile extends StatelessWidget {
     final secondaryText = AppUI.textSecondaryOf(context);
     final canRespond = onAccept != null && onDecline != null;
 
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: accentColor.withValues(
-          alpha: AppUI.isDark(context) ? 0.14 : 0.08,
-        ),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
         borderRadius: BorderRadius.circular(18),
-      ),
-      child: Row(
-        children: [
-          CircleAvatar(
-            backgroundColor: accentColor.withValues(alpha: 0.18),
-            child: Icon(Icons.person_rounded, color: accentColor),
+        onTap: () {
+          final parts = request.id.split('_');
+          final targetUid = request.direction == FriendRequestDirection.incoming
+              ? (parts.length > 1 ? parts[1] : request.id)
+              : (parts.length > 2 ? parts[2] : request.id);
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => FriendPublicProfilePage(
+                friendId: targetUid,
+                name: request.name,
+                signature: request.signature,
+                todayFocusSeconds: 0,
+                score: 35,
+                isStudying: false,
+                avatarColor: accentColor,
+                memberStatus: StudyMemberStatus.offline,
+              ),
+            ),
+          );
+        },
+        child: Ink(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: accentColor.withValues(
+              alpha: AppUI.isDark(context) ? 0.14 : 0.08,
+            ),
+            borderRadius: BorderRadius.circular(18),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  request.name,
-                  style: TextStyle(
-                    color: primaryText,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w900,
-                  ),
+          child: Row(
+            children: [
+              CircleAvatar(
+                backgroundColor: accentColor.withValues(alpha: 0.18),
+                child: Icon(Icons.person_rounded, color: accentColor),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      request.name,
+                      style: TextStyle(
+                        color: primaryText,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${request.nudgeId} · ${request.signature}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: secondaryText, fontSize: 12),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  '${request.nudgeId} · ${request.signature}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: secondaryText, fontSize: 12),
+              ),
+              if (canRespond) ...[
+                IconButton(
+                  onPressed: () => onDecline!(request.id),
+                  icon: const Icon(Icons.close_rounded),
                 ),
-              ],
-            ),
+                IconButton.filled(
+                  onPressed: () => onAccept!(request.id),
+                  icon: const Icon(Icons.check_rounded),
+                ),
+              ] else
+                _StatusPill(text: '等待回覆', color: accentColor),
+            ],
           ),
-          if (canRespond) ...[
-            IconButton(
-              onPressed: () => onDecline!(request.id),
-              icon: const Icon(Icons.close_rounded),
-            ),
-            IconButton.filled(
-              onPressed: () => onAccept!(request.id),
-              icon: const Icon(Icons.check_rounded),
-            ),
-          ] else
-            _StatusPill(text: '等待回覆', color: accentColor),
-        ],
+        ),
       ),
     );
   }

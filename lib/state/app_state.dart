@@ -1,7 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_ai/firebase_ai.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
+import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 
 import '../models/avatar_catalog.dart';
 import '../models/avatar_profile.dart';
@@ -14,6 +21,8 @@ import '../models/study_room_models.dart';
 import '../models/task_model.dart';
 import '../models/user_model.dart';
 import '../services/local_storage_service.dart';
+import '../services/notification_service.dart';
+import '../theme/app_ui.dart';
 
 class ReminderChannelSetting {
   final String key;
@@ -70,6 +79,785 @@ class ReminderPreview {
 }
 
 class AppState extends ChangeNotifier {
+  AppState() {
+    _listenToAuthChanges();
+  }
+
+  bool _isGuestMode = false;
+  bool get isGuestMode => _isGuestMode;
+
+  void skipSignIn() {
+    _isGuestMode = true;
+    notifyListeners();
+  }
+
+  StreamSubscription? _userSubscription;
+  StreamSubscription? _friendsSubscription;
+  StreamSubscription? _incomingRequestsSubscription;
+  StreamSubscription? _outgoingRequestsSubscription;
+  StreamSubscription? _roomsSubscription;
+  StreamSubscription? _shopSubscription;
+  StreamSubscription? _incomingGuardianRequestsSubscription;
+  StreamSubscription? _outgoingGuardianRequestsSubscription;
+  StreamSubscription? _groupOwnerSubscription;
+  Timer? _dailyResetTimer;
+
+  /// The current user's Firestore uid, falling back to 'local_user' when
+  /// the user is not signed in (guest mode / offline).
+  String get _myId => _currentUser?.id ?? 'local_user';
+
+  void _listenToAuthChanges() {
+    try {
+      fb_auth.FirebaseAuth.instance.authStateChanges().listen((
+        fb_auth.User? user,
+      ) async {
+        if (user != null) {
+          _isGuestMode = false;
+          await _syncProfileFromFirebaseUser(user);
+          _setupFirestoreListeners(user);
+        } else {
+          _cancelFirestoreListeners();
+          _currentUser = null;
+          notifyListeners();
+        }
+      });
+    } catch (e) {
+      debugPrint('Error listening to auth state: $e');
+    }
+  }
+
+  List<FriendRequest> _incomingRequestsList = [];
+  List<FriendRequest> _outgoingRequestsList = [];
+
+  List<Map<String, dynamic>> _incomingGuardianRequests = [];
+  List<Map<String, dynamic>> get incomingGuardianRequests =>
+      _incomingGuardianRequests;
+
+  List<Map<String, dynamic>> _outgoingGuardianRequests = [];
+  List<Map<String, dynamic>> get outgoingGuardianRequests =>
+      _outgoingGuardianRequests;
+
+  void _setupFirestoreListeners(fb_auth.User user) {
+    _cancelFirestoreListeners();
+
+    // User profile listener
+    _userSubscription = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .snapshots()
+        .listen((docSnap) {
+          try {
+            if (docSnap.exists) {
+              final data = docSnap.data()!;
+              _currentUser = UserModel.fromJson(data);
+              _profileNickname = _currentUser!.nickname;
+              _profileSignature = _currentUser!.signature;
+              _myNudgeId = _currentUser!.username;
+              _themeModeSetting = _currentUser!.themeMode;
+              _iconColorSetting = _currentUser!.accentColor;
+              _disciplineCoins =
+                  (data['disciplineCoins'] as num?)?.toInt() ??
+                  _disciplineCoins;
+              _unlockedPlanets = _parseUnlockedPlanets(data);
+              _planetCount = _unlockedPlanets.length - 1;
+              _weeklyPlanetEarned =
+                  data['weeklyPlanetEarned'] as bool? ?? _weeklyPlanetEarned;
+              _lastSettledWeekMonday =
+                  data['lastSettledWeekMonday'] as String? ??
+                  _lastSettledWeekMonday;
+              if (data['rewardedTaskKeys'] != null) {
+                _rewardedTaskKeys = Set<String>.from(
+                  List<String>.from(data['rewardedTaskKeys']),
+                );
+              }
+              if (data['dailyCoinEarned'] != null) {
+                final Map decoded = data['dailyCoinEarned'] as Map;
+                _dailyCoinEarned = decoded.map(
+                  (k, v) => MapEntry(k.toString(), (v as num).toInt()),
+                );
+              }
+              if (data['monthlyDeadlineCoinEarned'] != null) {
+                final Map decoded = data['monthlyDeadlineCoinEarned'] as Map;
+                _monthlyDeadlineCoinEarned = decoded.map(
+                  (k, v) => MapEntry(k.toString(), (v as num).toInt()),
+                );
+              }
+              if (data['avatarProfile'] != null) {
+                _avatarProfile = AvatarProfile.fromJson(
+                  Map<String, dynamic>.from(data['avatarProfile'] as Map),
+                );
+              }
+              if (data['unlockedAvatarItems'] != null) {
+                _unlockedAvatarItemKeys = Set<String>.from(
+                  List<String>.from(data['unlockedAvatarItems']),
+                );
+              }
+              if (data['unlockedBadgeDates'] != null) {
+                _unlockedBadgeDates = Map<String, String>.from(
+                  data['unlockedBadgeDates'] as Map,
+                );
+              }
+              if (data['tasks'] != null) {
+                _tasks = List<Map<String, dynamic>>.from(
+                  (data['tasks'] as List).map(
+                    (t) => Map<String, dynamic>.from(t as Map),
+                  ),
+                );
+              }
+              if (data['dailySummaries'] != null) {
+                _dailySummaries = List<DailySummary>.from(
+                  (data['dailySummaries'] as List).map(
+                    (s) => DailySummary.fromJson(
+                      Map<String, dynamic>.from(s as Map),
+                    ),
+                  ),
+                );
+              }
+              if (data['webToolsState'] != null) {
+                _webToolsState = Map<String, dynamic>.from(
+                  data['webToolsState'] as Map,
+                );
+              } else {
+                _webToolsState = null;
+              }
+              if (data['webToolsCollection'] != null) {
+                _webToolsCollection = Map<String, dynamic>.from(
+                  data['webToolsCollection'] as Map,
+                );
+              } else {
+                _webToolsCollection = null;
+              }
+              _userRole = data['userRole'] as String? ?? _userRole;
+              _groupId = data['groupId'] as String?;
+              _groupName = data['groupName'] as String?;
+              _isGroupOwner = data['isGroupOwner'] as bool? ?? false;
+              _profileTitleBadgeKey =
+                  data['profileTitleBadgeKey'] as String? ?? '';
+              if (data['backgroundTheme'] != null) {
+                final bt = data['backgroundTheme'] as String;
+                if (AppUI.backgroundThemeKeys.contains(bt)) {
+                  _backgroundThemeSetting = bt;
+                }
+              }
+              if (data['focusSeconds'] != null) {
+                final cloudFocusSeconds =
+                    (data['focusSeconds'] as num?)?.toInt() ?? 0;
+                if (cloudFocusSeconds > _focusSeconds) {
+                  _focusSeconds = cloudFocusSeconds;
+                }
+              }
+              if (_groupId != null && !_isGroupOwner) {
+                _setupGroupOwnerListener(user.uid, _groupId!);
+              } else {
+                _groupOwnerSubscription?.cancel();
+                _groupOwnerSubscription = null;
+              }
+              _syncTaskRewards();
+              checkWeeklyPlanetSettlement();
+              notifyListeners();
+            }
+          } catch (e, stack) {
+            debugPrint('Error inside Firestore user snapshot listener: $e');
+            debugPrint('Stacktrace: $stack');
+          }
+        });
+
+    // Friends listener
+    _friendsSubscription = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('friends')
+        .snapshots()
+        .listen((snapshot) {
+          _socialFriends = snapshot.docs
+              .map((doc) => SocialFriendProfile.fromJson(doc.data()))
+              .toList();
+          notifyListeners();
+        });
+
+    // Incoming requests listener
+    _incomingRequestsSubscription = FirebaseFirestore.instance
+        .collection('friend_requests')
+        .where('receiverId', isEqualTo: user.uid)
+        .where('status', isEqualTo: 'pending')
+        .snapshots()
+        .listen((snapshot) {
+          _incomingRequestsList = snapshot.docs.map((doc) {
+            final data = doc.data();
+            final createdAt =
+                (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now();
+            return FriendRequest(
+              id: doc.id,
+              nudgeId: data['senderNudgeId'] as String? ?? '',
+              name: data['senderName'] as String? ?? '',
+              signature: data['senderSignature'] as String? ?? '',
+              direction: FriendRequestDirection.incoming,
+              status: FriendRequestStatus.pending,
+              createdAt: createdAt,
+            );
+          }).toList();
+          _friendRequests = _incomingRequestsList + _outgoingRequestsList;
+          notifyListeners();
+        });
+
+    // Outgoing requests listener
+    _outgoingRequestsSubscription = FirebaseFirestore.instance
+        .collection('friend_requests')
+        .where('senderId', isEqualTo: user.uid)
+        .where('status', isEqualTo: 'pending')
+        .snapshots()
+        .listen((snapshot) {
+          _outgoingRequestsList = snapshot.docs.map((doc) {
+            final data = doc.data();
+            final createdAt =
+                (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now();
+            return FriendRequest(
+              id: doc.id,
+              nudgeId: data['receiverNudgeId'] as String? ?? '',
+              name: data['receiverName'] as String? ?? '',
+              signature: data['receiverSignature'] as String? ?? '',
+              direction: FriendRequestDirection.outgoing,
+              status: FriendRequestStatus.pending,
+              createdAt: createdAt,
+            );
+          }).toList();
+          _friendRequests = _incomingRequestsList + _outgoingRequestsList;
+          notifyListeners();
+        });
+
+    // Study rooms listener — watches every room where the user is a member
+    // The room document's 'memberIds' array field tracks who's in the room.
+    _roomsSubscription = FirebaseFirestore.instance
+        .collection('rooms')
+        .where('memberIds', arrayContains: user.uid)
+        .snapshots()
+        .listen((snapshot) {
+          _mergeFirestoreRooms(snapshot.docs);
+        });
+
+    // Shop items listener (dynamic character series)
+    _shopSubscription = FirebaseFirestore.instance
+        .collection('shop_items')
+        .snapshots()
+        .listen((snapshot) {
+          final docs =
+              snapshot.docs
+                  .where((doc) => _isActiveShopItem(doc.data()))
+                  .toList()
+                ..sort((a, b) {
+                  final aCreated = _shopTimestampSeconds(
+                    a.data()['created_at'],
+                  );
+                  final bCreated = _shopTimestampSeconds(
+                    b.data()['created_at'],
+                  );
+                  final createdComparison = aCreated.compareTo(bCreated);
+                  if (createdComparison != 0) return createdComparison;
+                  return a.id.compareTo(b.id);
+                });
+
+          final dynamicStages = <AvatarEvolutionStage>[];
+          var fallbackIndex = 18;
+          for (final doc in docs) {
+            final data = doc.data();
+            if (data['type'] != 'event_character') continue;
+            final parsedStages = _dynamicStagesFromShopItem(
+              doc.id,
+              data,
+              fallbackIndex,
+            );
+            if (parsedStages.isEmpty) continue;
+            dynamicStages.addAll(parsedStages);
+            fallbackIndex =
+                parsedStages.map((stage) => stage.index).reduce(math.max) + 1;
+          }
+          AvatarCatalog.replaceDynamicStages(dynamicStages);
+          _normalizeAvatarProfileForCatalog();
+          notifyListeners();
+        });
+
+    // Incoming guardian requests listener
+    _incomingGuardianRequestsSubscription = FirebaseFirestore.instance
+        .collection('guardian_requests')
+        .where('receiverId', isEqualTo: user.uid)
+        .snapshots()
+        .listen((snapshot) {
+          final docs = snapshot.docs
+              .map((doc) => {'id': doc.id, ...doc.data()})
+              .toList();
+          _incomingGuardianRequests = docs
+              .where((d) => d['status'] == 'pending')
+              .toList();
+
+          // Check for accepted request to trigger local profile linkage update
+          final accepted = docs
+              .where((d) => d['status'] == 'accepted')
+              .toList();
+          if (accepted.isNotEmpty && !isGuardianLinked) {
+            _autoUpdateLinkage(accepted.first, user.uid);
+          } else if (accepted.isEmpty && isGuardianLinked) {
+            _checkAndAutoClearLinkage(user.uid);
+          }
+          notifyListeners();
+        });
+
+    // Outgoing guardian requests listener
+    _outgoingGuardianRequestsSubscription = FirebaseFirestore.instance
+        .collection('guardian_requests')
+        .where('senderId', isEqualTo: user.uid)
+        .snapshots()
+        .listen((snapshot) {
+          final docs = snapshot.docs
+              .map((doc) => {'id': doc.id, ...doc.data()})
+              .toList();
+          _outgoingGuardianRequests = docs
+              .where((d) => d['status'] == 'pending')
+              .toList();
+
+          // Check for accepted request to trigger local profile linkage update
+          final accepted = docs
+              .where((d) => d['status'] == 'accepted')
+              .toList();
+          if (accepted.isNotEmpty && !isGuardianLinked) {
+            _autoUpdateLinkage(accepted.first, user.uid);
+          } else if (accepted.isEmpty && isGuardianLinked) {
+            _checkAndAutoClearLinkage(user.uid);
+          }
+          notifyListeners();
+        });
+  }
+
+  int _shopTimestampSeconds(dynamic value) {
+    if (value is Timestamp) return value.seconds;
+    if (value is DateTime) return value.millisecondsSinceEpoch ~/ 1000;
+    if (value is num) return value.toInt();
+    return 0;
+  }
+
+  bool _isActiveShopItem(Map<String, dynamic> data) {
+    final type = data['type'] as String? ?? 'permanent';
+    final expiresAt = _shopTimestampSeconds(data['expires_at']);
+    if (type == 'permanent' || expiresAt == 0) return true;
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final startAt = _shopTimestampSeconds(data['start_time']);
+    final endAt = _shopTimestampSeconds(data['end_time']) == 0
+        ? expiresAt
+        : _shopTimestampSeconds(data['end_time']);
+    return startAt <= now && now <= endAt;
+  }
+
+  List<AvatarEvolutionStage> _dynamicStagesFromShopItem(
+    String documentId,
+    Map<String, dynamic> data,
+    int fallbackIndex,
+  ) {
+    final seriesName =
+        data['series_name'] as String? ?? data['name'] as String? ?? '活動限定角色';
+    final description = data['description'] as String? ?? 'Web 端上架的活動限時角色。';
+    final price = (data['price'] as num?)?.toInt() ?? 60;
+    final baseIndex = (data['catalog_index_base'] as num?)?.toInt();
+    final rawStages = data['character_stages'];
+
+    if (rawStages is List && rawStages.isNotEmpty) {
+      return rawStages
+          .asMap()
+          .entries
+          .map((entry) {
+            final stageData = Map<String, dynamic>.from(entry.value as Map);
+            final stageNumber =
+                (stageData['stage'] as num?)?.toInt() ?? entry.key + 1;
+            final defaultRequirement = _defaultDynamicStageRequirement(
+              stageNumber,
+            );
+            final characterAsset =
+                stageData['character_asset'] as String? ??
+                stageData['image_path'] as String? ??
+                data['image_path'] as String? ??
+                '';
+            final iconAsset =
+                stageData['icon_asset'] as String? ??
+                stageData['icon_path'] as String? ??
+                characterAsset;
+            return AvatarEvolutionStage(
+              index:
+                  (stageData['catalog_index'] as num?)?.toInt() ??
+                  (baseIndex == null
+                      ? fallbackIndex + entry.key
+                      : baseIndex + stageNumber - 1),
+              series: seriesName,
+              name:
+                  stageData['name'] as String? ??
+                  '$seriesName 第 $stageNumber 階',
+              stage: stageNumber,
+              requiredLevel:
+                  (stageData['required_level'] as num?)?.toInt() ??
+                  defaultRequirement.$1,
+              requiredExperience:
+                  (stageData['required_experience'] as num?)?.toInt() ??
+                  defaultRequirement.$2,
+              description: stageData['description'] as String? ?? description,
+              characterAsset: characterAsset,
+              iconAsset: iconAsset,
+              coinPrice: stageNumber == 1
+                  ? ((stageData['coin_price'] as num?)?.toInt() ?? price)
+                  : 0,
+            );
+          })
+          .toList(growable: false);
+    }
+
+    final imagePath = data['image_path'] as String? ?? '';
+    return [
+      AvatarEvolutionStage(
+        index: baseIndex ?? fallbackIndex,
+        series: seriesName == '活動限定角色' ? '$seriesName $documentId' : seriesName,
+        name: data['name'] as String? ?? '未命名角色',
+        stage: 1,
+        requiredLevel: 1,
+        requiredExperience: 0,
+        description: description,
+        characterAsset: imagePath,
+        iconAsset: imagePath,
+        coinPrice: price,
+      ),
+    ];
+  }
+
+  (int, int) _defaultDynamicStageRequirement(int stage) {
+    if (stage <= 1) return (1, 0);
+    if (stage == 2) return (30, 10000);
+    return (60, 30000);
+  }
+
+  /// Merges Firestore room documents into the local _studyRooms list.
+  /// Local-only rooms (id starts with 'room_demo_') are kept as-is.
+  void _mergeFirestoreRooms(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    final remoteRooms = docs.map((doc) {
+      final data = doc.data();
+      return StudyRoomData.fromJson(data);
+    }).toList();
+
+    // Keep any demo/local-only rooms that aren't in Firestore.
+    final demoRooms = _studyRooms
+        .where((r) => r.id.startsWith('room_demo_'))
+        .toList();
+
+    // Merge: remote rooms replace local copies (preserving local data for unlisted rooms).
+    final remoteIds = remoteRooms.map((r) => r.id).toSet();
+    final localOnlyRooms = _studyRooms
+        .where(
+          (r) => !remoteIds.contains(r.id) && !r.id.startsWith('room_demo_'),
+        )
+        .toList();
+
+    _studyRooms = [...remoteRooms, ...localOnlyRooms, ...demoRooms];
+    _syncMyFocusSecondsAcrossRooms();
+    _syncStudyRoomGoalTasks();
+    _syncStudyGoalTaskCompletion();
+    _syncAutoTrackedTasks();
+    _syncTaskRewards();
+    _syncTodaySummary();
+    notifyListeners();
+  }
+
+  void _cancelFirestoreListeners() {
+    _userSubscription?.cancel();
+    _friendsSubscription?.cancel();
+    _incomingRequestsSubscription?.cancel();
+    _outgoingRequestsSubscription?.cancel();
+    _roomsSubscription?.cancel();
+    _shopSubscription?.cancel();
+    _incomingGuardianRequestsSubscription?.cancel();
+    _outgoingGuardianRequestsSubscription?.cancel();
+    _groupOwnerSubscription?.cancel();
+
+    _userSubscription = null;
+    _friendsSubscription = null;
+    _incomingRequestsSubscription = null;
+    _outgoingRequestsSubscription = null;
+    _roomsSubscription = null;
+    _shopSubscription = null;
+    _incomingGuardianRequestsSubscription = null;
+    _outgoingGuardianRequestsSubscription = null;
+    _groupOwnerSubscription = null;
+  }
+
+  @override
+  void dispose() {
+    _dailyResetTimer?.cancel();
+    _dailyResetTimer = null;
+    _cancelFirestoreListeners();
+    super.dispose();
+  }
+
+  Future<void> _autoUpdateLinkage(
+    Map<String, dynamic> requestData,
+    String myUid,
+  ) async {
+    final senderId = requestData['senderId'] as String;
+    final senderNudgeId = requestData['senderNudgeId'] as String;
+    final receiverNudgeId = requestData['receiverNudgeId'] as String;
+    final targetNudgeId = (myUid == senderId) ? receiverNudgeId : senderNudgeId;
+
+    try {
+      final docRef = FirebaseFirestore.instance.collection('users').doc(myUid);
+      await docRef.update({
+        'webToolsState.guardianInvite': {
+          'relativeId': targetNudgeId,
+          'goal': '共同健康與專注',
+          'permission': '完整資料',
+          'message': '親屬帳號已連結。',
+        },
+        'webToolsState.guardianInviteStatus': {
+          'status': 'linked',
+          'updatedAt': DateTime.now().toIso8601String(),
+        },
+      });
+    } catch (e) {
+      debugPrint('Failed to auto-update relative linkage: $e');
+    }
+  }
+
+  Future<void> _autoClearLinkage(String myUid) async {
+    try {
+      final docRef = FirebaseFirestore.instance.collection('users').doc(myUid);
+      await docRef.update({
+        'webToolsState.guardianInvite': FieldValue.delete(),
+        'webToolsState.guardianInviteStatus': FieldValue.delete(),
+      });
+    } catch (e) {
+      debugPrint('Failed to auto-clear relative linkage: $e');
+    }
+  }
+
+  Future<void> _checkAndAutoClearLinkage(String myUid) async {
+    if (!isGuardianLinked) return;
+    try {
+      final incomingAccepted = await FirebaseFirestore.instance
+          .collection('guardian_requests')
+          .where('receiverId', isEqualTo: myUid)
+          .where('status', isEqualTo: 'accepted')
+          .limit(1)
+          .get();
+      if (incomingAccepted.docs.isNotEmpty) return;
+
+      final outgoingAccepted = await FirebaseFirestore.instance
+          .collection('guardian_requests')
+          .where('senderId', isEqualTo: myUid)
+          .where('status', isEqualTo: 'accepted')
+          .limit(1)
+          .get();
+      if (outgoingAccepted.docs.isNotEmpty) return;
+
+      await _autoClearLinkage(myUid);
+    } catch (e) {
+      debugPrint('Failed to check and clear linkage: $e');
+    }
+  }
+
+  Future<void> _syncProfileFromFirebaseUser(fb_auth.User user) async {
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid);
+      final docSnap = await docRef.get();
+
+      if (docSnap.exists) {
+        final data = docSnap.data()!;
+        _currentUser = UserModel.fromJson(data);
+        _profileNickname = _currentUser!.nickname;
+        _profileSignature = _currentUser!.signature;
+        _myNudgeId = _currentUser!.username;
+        await pullDataFromFirestore();
+      } else {
+        final now = DateTime.now();
+        _currentUser = UserModel(
+          id: user.uid,
+          email: user.email,
+          username: 'NDG_${user.uid.substring(0, 6).toUpperCase()}',
+          nickname: _profileNickname,
+          signature: _profileSignature,
+          authProvider: 'email',
+          avatarProfileId: 'local_avatar',
+          themeMode: _themeModeSetting,
+          accentColor: _iconColorSetting,
+          timezone: now.timeZoneName,
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+          lastLoginAt: now,
+        );
+        await docRef.set(_currentUser!.toJson());
+        _myNudgeId = _currentUser!.username;
+        await syncDataToFirestore();
+      }
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error syncing user profile from Firebase: $e');
+    }
+  }
+
+  Future<void> syncDataToFirestore() async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.id);
+      await docRef.set({
+        'nickname': _profileNickname,
+        'signature': _profileSignature,
+        'myNudgeId': _myNudgeId,
+        'themeMode': _themeModeSetting,
+        'accentColor': _iconColorSetting,
+        'backgroundTheme': _backgroundThemeSetting,
+        'profileTitleBadgeKey': _profileTitleBadgeKey,
+        'disciplineCoins': _disciplineCoins,
+        'planetCount': _planetCount,
+        'unlockedPlanets': _unlockedPlanets,
+        'weeklyPlanetEarned': _weeklyPlanetEarned,
+        'lastSettledWeekMonday': _lastSettledWeekMonday,
+        'rewardedTaskKeys': _rewardedTaskKeys.toList(),
+        'dailyCoinEarned': _dailyCoinEarned,
+        'monthlyDeadlineCoinEarned': _monthlyDeadlineCoinEarned,
+        'focusSeconds':
+            _focusSeconds, // ← synced for web dashboard real-time stats
+        'avatarProfile': _avatarProfile.toJson(),
+        'unlockedAvatarItems': _unlockedAvatarItemKeys.toList(),
+        'tasks': _tasks,
+        'dailySummaries': _dailySummaries.map((s) => s.toJson()).toList(),
+        'unlockedBadgeDates': _unlockedBadgeDates,
+        'userRole': _userRole,
+        'groupId': _groupId,
+        'groupName': _groupName,
+        'isGroupOwner': _isGroupOwner,
+        'webToolsState': _webToolsState,
+        'webToolsCollection': _webToolsCollection,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      debugPrint('Failed to sync to Firestore: $e');
+    }
+  }
+
+  Future<void> pullDataFromFirestore() async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.id);
+      final docSnap = await docRef.get();
+      if (docSnap.exists) {
+        final data = docSnap.data()!;
+        if (data['tasks'] != null) {
+          _tasks = List<Map<String, dynamic>>.from(
+            (data['tasks'] as List).map((t) => Map<String, dynamic>.from(t)),
+          );
+        }
+        _disciplineCoins =
+            (data['disciplineCoins'] as num?)?.toInt() ?? _disciplineCoins;
+        _unlockedPlanets = _parseUnlockedPlanets(data);
+        _planetCount = _unlockedPlanets.length - 1;
+        _weeklyPlanetEarned =
+            data['weeklyPlanetEarned'] as bool? ?? _weeklyPlanetEarned;
+        _lastSettledWeekMonday =
+            data['lastSettledWeekMonday'] as String? ?? _lastSettledWeekMonday;
+        if (data['rewardedTaskKeys'] != null) {
+          _rewardedTaskKeys = Set<String>.from(
+            List<String>.from(data['rewardedTaskKeys']),
+          );
+        }
+        if (data['dailyCoinEarned'] != null) {
+          final Map decoded = data['dailyCoinEarned'] as Map;
+          _dailyCoinEarned = decoded.map(
+            (k, v) => MapEntry(k.toString(), (v as num).toInt()),
+          );
+        }
+        if (data['monthlyDeadlineCoinEarned'] != null) {
+          final Map decoded = data['monthlyDeadlineCoinEarned'] as Map;
+          _monthlyDeadlineCoinEarned = decoded.map(
+            (k, v) => MapEntry(k.toString(), (v as num).toInt()),
+          );
+        }
+        if (data['avatarProfile'] != null) {
+          _avatarProfile = AvatarProfile.fromJson(
+            Map<String, dynamic>.from(data['avatarProfile']),
+          );
+        }
+        if (data['unlockedAvatarItems'] != null) {
+          _unlockedAvatarItemKeys = Set<String>.from(
+            List<String>.from(data['unlockedAvatarItems']),
+          );
+        }
+        if (data['unlockedBadgeDates'] != null) {
+          _unlockedBadgeDates = Map<String, String>.from(
+            data['unlockedBadgeDates'],
+          );
+        }
+        if (data['dailySummaries'] != null) {
+          _dailySummaries = List<DailySummary>.from(
+            (data['dailySummaries'] as List).map(
+              (s) => DailySummary.fromJson(Map<String, dynamic>.from(s)),
+            ),
+          );
+        }
+        if (data['webToolsState'] != null) {
+          _webToolsState = Map<String, dynamic>.from(
+            data['webToolsState'] as Map,
+          );
+        } else {
+          _webToolsState = null;
+        }
+        if (data['webToolsCollection'] != null) {
+          _webToolsCollection = Map<String, dynamic>.from(
+            data['webToolsCollection'] as Map,
+          );
+        } else {
+          _webToolsCollection = null;
+        }
+        _profileNickname = data['nickname'] as String? ?? _profileNickname;
+        _profileSignature = data['signature'] as String? ?? _profileSignature;
+        _myNudgeId = data['myNudgeId'] as String? ?? _myNudgeId;
+        _themeModeSetting = data['themeMode'] as String? ?? _themeModeSetting;
+        _iconColorSetting = data['accentColor'] as String? ?? _iconColorSetting;
+        _profileTitleBadgeKey =
+            data['profileTitleBadgeKey'] as String? ?? _profileTitleBadgeKey;
+        _userRole = data['userRole'] as String? ?? _userRole;
+        // Restore background theme across devices
+        if (data['backgroundTheme'] != null) {
+          final bt = data['backgroundTheme'] as String;
+          if (AppUI.backgroundThemeKeys.contains(bt)) {
+            _backgroundThemeSetting = bt;
+          }
+        }
+        // Restore today's focus seconds
+        if (data['focusSeconds'] != null) {
+          final cloudFocusSeconds =
+              (data['focusSeconds'] as num?)?.toInt() ?? 0;
+          // Only restore if cloud data is more recent (higher value) — avoids overwriting fresh session
+          if (cloudFocusSeconds > _focusSeconds) {
+            _focusSeconds = cloudFocusSeconds;
+          }
+        }
+        _syncTaskRewards();
+        await checkWeeklyPlanetSettlement();
+        notifyListeners();
+
+        // Also save locally so that it matches
+        await _saveAppearanceSettings();
+        await _saveTasks();
+        await _saveDailySummaries();
+        await _saveAvatarUnlockState();
+        await _saveRewardState();
+      }
+    } catch (e) {
+      debugPrint('Failed to pull from Firestore: $e');
+    }
+  }
+
   static const List<ReminderChannelSetting> _defaultReminderSettings = [
     ReminderChannelSetting(
       key: 'tasks',
@@ -105,6 +893,7 @@ class AppState extends ChangeNotifier {
     {
       'title': '完成 2 小時讀書',
       'done': false,
+      'isDone': false,
       'category': '讀書',
       'taskType': 'fixed',
       'dueDate': null,
@@ -113,6 +902,7 @@ class AppState extends ChangeNotifier {
     {
       'title': '步行超過 6000 步',
       'done': false,
+      'isDone': false,
       'category': '運動',
       'taskType': 'fixed',
       'dueDate': null,
@@ -121,6 +911,7 @@ class AppState extends ChangeNotifier {
     {
       'title': '運動 30 分鐘',
       'done': false,
+      'isDone': false,
       'category': '運動',
       'taskType': 'fixed',
       'dueDate': null,
@@ -129,6 +920,7 @@ class AppState extends ChangeNotifier {
     {
       'title': '晚上 11:30 前睡覺',
       'done': false,
+      'isDone': false,
       'category': '睡眠',
       'taskType': 'fixed',
       'dueDate': null,
@@ -137,6 +929,7 @@ class AppState extends ChangeNotifier {
     {
       'title': '準備期中報告',
       'done': false,
+      'isDone': false,
       'category': '讀書',
       'taskType': 'deadline',
       'dueDate': null,
@@ -161,6 +954,7 @@ class AppState extends ChangeNotifier {
   static const String _currentUserKey = 'current_user_setting';
   static const String _privacyConsentKey = 'privacy_consent_setting';
   static const String _privacyConsentAtKey = 'privacy_consent_at_setting';
+  static const String _onboardingCompletedKey = 'onboarding_completed_setting';
   static const String _seenUnlockedBadgesKey = 'seen_unlocked_badges_setting';
   static const String _unlockedBadgesKey = 'unlocked_badges_setting';
   static const String _socialEncouragementRecordsKey =
@@ -169,11 +963,18 @@ class AppState extends ChangeNotifier {
   static const String _legacyStudyGoalTaskTitle = '完成今日共讀目標';
   static const String _lastDailyResetDateKey = 'last_daily_reset_date';
   static const String _disciplineCoinsKey = 'discipline_coins_setting';
+  static const String _planetCountKey = 'planet_count_setting';
+  static const String _unlockedPlanetsKey = 'unlocked_planets_setting';
+  static const String _weeklyPlanetEarnedKey = 'weekly_planet_earned_setting';
+  static const String _lastSettledWeekMondayKey =
+      'last_settled_week_monday_setting';
   static const String _rewardedTaskKeysKey = 'rewarded_task_keys_setting';
   static const String _dailyCoinEarnedKey = 'daily_coin_earned_setting';
   static const String _monthlyDeadlineCoinEarnedKey =
       'monthly_deadline_coin_earned_setting';
   static const String _unlockedAvatarItemsKey = 'unlocked_avatar_items_setting';
+  static const String _avatarExperienceLedgerKey =
+      'avatar_experience_ledger_setting';
   static const int coinDailyLimit = 15;
   static const int coinWeeklyLimit = 100;
   static const int coinMonthlyLimit = 400;
@@ -188,6 +989,15 @@ class AppState extends ChangeNotifier {
     80: 3,
     100: 3,
   };
+  static const int avatarDailyScoreExperienceCap = 400;
+  static const int avatarDailyAutoExperienceCap = 100;
+  static const int avatarAutoFocusFullMinutes = 60;
+  static const double avatarAutoSleepFullHours = 7;
+  static const int avatarAutoStepsFull = 8000;
+  static const int avatarAutoExerciseFullMinutes = 30;
+  static const int avatarMaxLevel = 60;
+  static const double _avatarLevelCurveA = 5.454899668809663;
+  static const double _avatarLevelCurveB = 186.63549581141635;
 
   List<Map<String, dynamic>> _tasks = [];
   int _focusSeconds = 0;
@@ -195,12 +1005,22 @@ class AppState extends ChangeNotifier {
   int _steps = 0;
   int _exerciseMinutes = 0;
   bool _isHealthConnected = false;
+  DateTime? _lastHealthSyncTime;
+  int _lastStepsCount = 0;
   List<DailySummary> _dailySummaries = [];
   int _disciplineCoins = 0;
+  int _planetCount = 0;
+  bool _weeklyPlanetEarned = false;
+  List<String> _unlockedPlanets = ['新手星球'];
+  List<String> get unlockedPlanets => _unlockedPlanets;
+  String? _lastSettledWeekMonday;
+  String? _lastResetDateInMemory;
   Set<String> _rewardedTaskKeys = <String>{};
   Map<String, int> _dailyCoinEarned = <String, int>{};
   Map<String, int> _monthlyDeadlineCoinEarned = <String, int>{};
   Set<String> _unlockedAvatarItemKeys = <String>{};
+  Map<String, Map<String, int>> _avatarExperienceLedger =
+      <String, Map<String, int>>{};
 
   String _themeModeSetting = 'system';
   String _iconColorSetting = 'purple';
@@ -222,11 +1042,95 @@ class AppState extends ChangeNotifier {
   UserModel? _currentUser;
   bool _hasAcceptedPrivacyPolicy = false;
   DateTime? _privacyAcceptedAt;
+  bool _hasCompletedOnboarding = false;
+  bool _isHydrated = false;
   Set<String> _seenUnlockedBadgeKeys = <String>{};
   Map<String, String> _unlockedBadgeDates = <String, String>{};
   List<SocialEncouragementRecord> _socialEncouragementRecords = [];
+  Map<String, dynamic>? _webToolsState;
+  Map<String, dynamic>? _webToolsCollection;
+  String _userRole = 'personal';
+  String? _groupId;
+  String? _groupName;
+  bool _isGroupOwner = false;
 
   List<Map<String, dynamic>> get tasks => _tasks;
+  Map<String, dynamic>? get webToolsState => _webToolsState;
+  Map<String, dynamic>? get webToolsCollection => _webToolsCollection;
+  String get userRole => _userRole;
+  String? get groupId => _groupId;
+  String? get groupName => _groupName;
+  bool get isGroupOwner => _isGroupOwner;
+  bool get isGuardianLinked =>
+      guardianInvite != null && guardianInvite!['status'] == 'linked';
+
+  Map<String, dynamic>? get guardianInvite {
+    if (_webToolsState == null) return null;
+    final invite = _webToolsState!['guardianInvite'];
+    if (invite == null) return null;
+    final status =
+        _webToolsState!['guardianInviteStatus']?['status'] ??
+        'pending_child_approval';
+    return {...Map<String, dynamic>.from(invite as Map), 'status': status};
+  }
+
+  List<Map<String, dynamic>> get guardianEncouragements {
+    if (_webToolsCollection == null ||
+        _webToolsCollection!['encouragements'] == null) {
+      return [];
+    }
+    return List<Map<String, dynamic>>.from(
+      (_webToolsCollection!['encouragements'] as List).map(
+        (x) => Map<String, dynamic>.from(x as Map),
+      ),
+    );
+  }
+
+  List<Map<String, dynamic>> get timeCapsules {
+    if (_webToolsCollection == null ||
+        _webToolsCollection!['capsules'] == null) {
+      return [];
+    }
+    return List<Map<String, dynamic>>.from(
+      (_webToolsCollection!['capsules'] as List).map(
+        (x) => Map<String, dynamic>.from(x as Map),
+      ),
+    );
+  }
+
+  Map<String, dynamic>? get futureLetter {
+    if (_webToolsState == null || _webToolsState!['futureLetter'] == null) {
+      return null;
+    }
+    return Map<String, dynamic>.from(_webToolsState!['futureLetter'] as Map);
+  }
+
+  Map<String, dynamic>? get groupChallenge {
+    if (_webToolsState == null || _webToolsState!['challenge'] == null) {
+      return null;
+    }
+    return Map<String, dynamic>.from(_webToolsState!['challenge'] as Map);
+  }
+
+  List<Map<String, dynamic>> get studySchedules {
+    if (_webToolsCollection == null ||
+        _webToolsCollection!['studySchedules'] == null) {
+      return [];
+    }
+    return List<Map<String, dynamic>>.from(
+      (_webToolsCollection!['studySchedules'] as List).map(
+        (x) => Map<String, dynamic>.from(x as Map),
+      ),
+    );
+  }
+
+  Map<String, dynamic>? get examTemplate {
+    if (_webToolsState == null || _webToolsState!['template'] == null) {
+      return null;
+    }
+    return Map<String, dynamic>.from(_webToolsState!['template'] as Map);
+  }
+
   int get focusSeconds => _focusSeconds;
   int get focusMinutes => _focusSeconds ~/ 60;
   double get sleepHours => _sleepHours;
@@ -234,7 +1138,12 @@ class AppState extends ChangeNotifier {
   int get exerciseMinutes => _exerciseMinutes;
   bool get isHealthConnected => _isHealthConnected;
   List<DailySummary> get dailySummaries => _dailySummaries;
+  DailySummary get todaySummary => _buildTodayExperienceSummary();
+  String get todayKey => _todayKey();
   int get disciplineCoins => _disciplineCoins;
+  int get planetCount => _planetCount;
+  bool get weeklyPlanetEarned => _weeklyPlanetEarned;
+  String? get lastSettledWeekMonday => _lastSettledWeekMonday;
   int get unlockedAvatarItemCount => _unlockedAvatarItemKeys.length;
   int get todayCoinEarned => _dailyCoinEarned[_todayKey()] ?? 0;
   int get todayCoinRemaining {
@@ -317,20 +1226,38 @@ class AppState extends ChangeNotifier {
   List<SocialFriendProfile> get socialFriends => _socialFriends;
   List<FriendRequest> get friendRequests => _friendRequests;
   String get myNudgeId => _myNudgeId;
+  String get myFriendInvitePayload {
+    final uri = Uri(
+      scheme: 'nudge',
+      host: 'friend',
+      path: 'add',
+      queryParameters: {
+        'nudgeId': _myNudgeId,
+        'name': _profileNickname,
+        'signature': _profileSignature,
+      },
+    );
+    return uri.toString();
+  }
+
   UserModel? get currentUser => _currentUser;
   bool get isSignedIn => _currentUser != null;
   bool get hasAcceptedPrivacyPolicy => _hasAcceptedPrivacyPolicy;
   DateTime? get privacyAcceptedAt => _privacyAcceptedAt;
+  bool get hasCompletedOnboarding => _hasCompletedOnboarding;
+  bool get isHydrated => _isHydrated;
   String get accountProviderLabel {
+    if (_currentUser == null) return '尚未登入';
     switch (_currentUser?.authProvider) {
       case 'email':
+      case 'local':
         return 'Email';
       case 'google':
         return 'Google';
       case 'apple':
         return 'Apple';
       default:
-        return '尚未登入';
+        return '已登入';
     }
   }
 
@@ -371,11 +1298,201 @@ class AppState extends ChangeNotifier {
   }
 
   AvatarProfile get avatarProfile => _avatarProfile;
+  String get currentAvatarSeries {
+    return AvatarCatalog.stageForIndex(_avatarProfile.faceShapeIndex).series;
+  }
+
+  int get todayAvatarExperience {
+    return todayAvatarExperienceForSeries(currentAvatarSeries);
+  }
+
+  int get todayAvatarScoreExperience {
+    return todayAvatarScoreExperienceForSeries(currentAvatarSeries);
+  }
+
+  int get todayAvatarAutoExperience {
+    return todayAvatarAutoExperienceForSeries(currentAvatarSeries);
+  }
+
+  int get avatarExperience {
+    return avatarExperienceForSeries(currentAvatarSeries);
+  }
+
+  int get avatarLevel {
+    return avatarLevelForSeries(currentAvatarSeries);
+  }
+
+  int get avatarNextLevelExperience {
+    if (avatarLevel >= avatarMaxLevel) {
+      return avatarExperienceRequiredForLevel(avatarMaxLevel);
+    }
+    return avatarExperienceRequiredForLevel(avatarLevel + 1);
+  }
+
+  int get avatarExperienceToNextLevel {
+    if (avatarLevel >= avatarMaxLevel) return 0;
+    final remaining = avatarNextLevelExperience - avatarExperience;
+    return remaining < 0 ? 0 : remaining;
+  }
+
+  int avatarExperienceForSeries(String series) {
+    var total = 0;
+    for (final entry in _avatarExperienceLedger.values) {
+      total += entry[series] ?? 0;
+    }
+    return total;
+  }
+
+  int avatarExperienceForStage(int index) {
+    return avatarExperienceForSeries(AvatarCatalog.stageForIndex(index).series);
+  }
+
+  int todayAvatarExperienceForSeries(String series) {
+    return _avatarExperienceLedger[_todayKey()]?[series] ?? 0;
+  }
+
+  double _todayAvatarExperienceRatioForSeries(String series) {
+    final summary = _buildTodayExperienceSummary();
+    final totalTodayExperience = avatarExperienceForSummary(summary);
+    if (totalTodayExperience <= 0) return 0;
+    return (todayAvatarExperienceForSeries(series) / totalTodayExperience)
+        .clamp(0, 1)
+        .toDouble();
+  }
+
+  int todayAvatarScoreExperienceForSeries(String series) {
+    final ratio = _todayAvatarExperienceRatioForSeries(series);
+    return (avatarScoreExperienceForSummary(_buildTodayExperienceSummary()) *
+            ratio)
+        .round();
+  }
+
+  int todayAvatarAutoExperienceForSeries(String series) {
+    final total = todayAvatarExperienceForSeries(series);
+    final score = todayAvatarScoreExperienceForSeries(series);
+    final auto = total - score;
+    return auto < 0 ? 0 : auto;
+  }
+
+  int avatarLevelForSeries(String series) {
+    final experience = avatarExperienceForSeries(series);
+    var level = 1;
+    for (var candidate = 2; candidate <= avatarMaxLevel; candidate++) {
+      if (experience < avatarExperienceRequiredForLevel(candidate)) {
+        break;
+      }
+      level = candidate;
+    }
+    return level;
+  }
+
+  int avatarLevelForStage(int index) {
+    return avatarLevelForSeries(AvatarCatalog.stageForIndex(index).series);
+  }
+
+  static int avatarExperienceRequiredForLevel(int level) {
+    final normalizedLevel = level.clamp(1, avatarMaxLevel).toInt();
+    final levelOffset = normalizedLevel - 1;
+    final required =
+        (_avatarLevelCurveA * levelOffset * levelOffset) +
+        (_avatarLevelCurveB * levelOffset);
+    return required.round();
+  }
+
+  int get currentAvatarStageIndex => _avatarProfile.faceShapeIndex;
+  int get currentAvatarIconIndex => _avatarProfile.avatarIconIndex;
+
+  AvatarEvolutionStage _firstAvatarStageForSeries(String series) {
+    return AvatarCatalog.evolutionStages.firstWhere(
+      (stage) => stage.series == series && stage.stage == 1,
+      orElse: () => AvatarCatalog.evolutionStages.first,
+    );
+  }
+
+  bool _isAvatarSeriesPurchased(String series) {
+    final firstStage = _firstAvatarStageForSeries(series);
+    if (firstStage.coinPrice <= 0) return true;
+    return _unlockedAvatarItemKeys.contains(
+      avatarItemKey('faceShape', firstStage.index),
+    );
+  }
+
+  bool isAvatarEvolutionStageUnlocked(int index) {
+    final stage = AvatarCatalog.stageForIndex(index);
+    if (!_isAvatarSeriesPurchased(stage.series)) return false;
+    if (stage.stage == 1) return true;
+    return avatarLevelForSeries(stage.series) >= stage.requiredLevel &&
+        avatarExperienceForSeries(stage.series) >= stage.requiredExperience;
+  }
+
+  bool isAvatarIconUnlocked(int index) {
+    return isAvatarEvolutionStageUnlocked(index);
+  }
+
+  String avatarEvolutionRequirementText(int index) {
+    final stage = AvatarCatalog.stageForIndex(index);
+    if (isAvatarEvolutionStageUnlocked(index)) return '已解鎖';
+    final firstStage = _firstAvatarStageForSeries(stage.series);
+    if (!_isAvatarSeriesPurchased(stage.series)) {
+      if (stage.index == firstStage.index && firstStage.coinPrice > 0) {
+        return '${firstStage.coinPrice} 自律幣購買';
+      }
+      return '先購買${firstStage.name}';
+    }
+    return 'Lv.${stage.requiredLevel} / ${stage.requiredExperience} EXP 解鎖';
+  }
+
+  int avatarExperienceForSummary(DailySummary summary) {
+    return avatarScoreExperienceForSummary(summary) +
+        avatarAutoExperienceForSummary(summary);
+  }
+
+  int avatarScoreExperienceForSummary(DailySummary summary) {
+    if (summary.totalTasks <= 0) return 0;
+    final raw = (summary.disciplineScore * 4).round();
+    final multiplier = _avatarExperienceVolumeMultiplier(summary.totalTasks);
+    return (raw * multiplier)
+        .round()
+        .clamp(0, avatarDailyScoreExperienceCap)
+        .toInt();
+  }
+
+  int avatarAutoExperienceForSummary(DailySummary summary) {
+    final sourceRatios = <double>[
+      summary.focusMinutes / avatarAutoFocusFullMinutes,
+      summary.sleepHours / avatarAutoSleepFullHours,
+      summary.steps / avatarAutoStepsFull,
+      summary.exerciseMinutes / avatarAutoExerciseFullMinutes,
+      summary.roomCompleted > 0 ? 1 : 0,
+    ];
+
+    var bestRatio = 0.0;
+    for (final ratio in sourceRatios) {
+      if (ratio > bestRatio) bestRatio = ratio;
+    }
+
+    return (bestRatio.clamp(0, 1) * avatarDailyAutoExperienceCap).round();
+  }
+
+  double _avatarExperienceVolumeMultiplier(int totalTasks) {
+    if (totalTasks <= 0) return 0;
+    if (totalTasks == 1) return 0.35;
+    if (totalTasks == 2) return 0.55;
+    if (totalTasks == 3) return 0.75;
+    if (totalTasks == 4) return 0.9;
+    return 1.0;
+  }
 
   AvatarProfile avatarVariantForSeed(int seed) {
     final normalizedSeed = seed.abs();
+    final starterIndexes = AvatarCatalog.evolutionStages
+        .where((stage) => stage.stage == 1 && stage.coinPrice <= 0)
+        .map((stage) => stage.index)
+        .toList(growable: false);
     return AvatarProfile.initial().copyWith(
-      faceShapeIndex: normalizedSeed % AvatarCatalog.faceShapeLabels.length,
+      faceShapeIndex: starterIndexes.isEmpty
+          ? 0
+          : starterIndexes[normalizedSeed % starterIndexes.length],
     );
   }
 
@@ -384,16 +1501,24 @@ class AppState extends ChangeNotifier {
   }
 
   bool isAvatarItemUnlocked(String category, int index) {
+    if (category == 'faceShape') {
+      return isAvatarEvolutionStageUnlocked(index);
+    }
+    if (category == 'appBackground') {
+      if (index == 0) return true;
+      return _unlockedAvatarItemKeys.contains(avatarItemKey(category, index));
+    }
     if (index == 0) return true;
     return _unlockedAvatarItemKeys.contains(avatarItemKey(category, index));
   }
 
   int avatarItemPrice(String category, int index) {
-    if (index == 0) return 0;
-
     switch (category) {
       case 'faceShape':
-        return 45 + (index * 15);
+        return AvatarCatalog.stageForIndex(index).coinPrice;
+      case 'appBackground':
+        if (index < 0 || index >= AppUI.backgroundThemeKeys.length) return 0;
+        return AppUI.backgroundThemePrice(AppUI.backgroundThemeKeys[index]);
       default:
         return 8 + (index * 3);
     }
@@ -418,7 +1543,7 @@ class AppState extends ChangeNotifier {
     final allModels = taskModels;
     final totalWeight = allModels.fold<double>(
       0,
-      (sum, item) => sum + taskRewardWeightForTask(item),
+      (acc, item) => acc + taskRewardWeightForTask(item),
     );
     if (totalWeight <= 0) return 0;
     return ((taskWeight / totalWeight) * 100).round().clamp(1, 100);
@@ -644,6 +1769,19 @@ class AppState extends ChangeNotifier {
     return previews;
   }
 
+  List<LocalReminderRequest> get localReminderRequests {
+    return upcomingReminders
+        .map(
+          (preview) => LocalReminderRequest(
+            channelKey: preview.channelKey,
+            title: preview.title,
+            body: preview.subtitle,
+            timeLabel: preview.timeLabel,
+          ),
+        )
+        .toList(growable: false);
+  }
+
   int get todayActionableTaskTotal => todayActionableTaskModels.length;
 
   int get todayActionableTaskCompleted {
@@ -696,7 +1834,7 @@ class AppState extends ChangeNotifier {
     if (summaries.isEmpty) return 0;
     final total = summaries.fold<int>(
       0,
-      (sum, day) => sum + day.disciplineScore,
+      (acc, day) => acc + day.disciplineScore,
     );
     return total / summaries.length;
   }
@@ -704,8 +1842,8 @@ class AppState extends ChangeNotifier {
   int _totalStudyRoomFocusMinutes() {
     final totalSeconds = _studyRooms.fold<int>(
       0,
-      (sum, room) =>
-          sum +
+      (acc, room) =>
+          acc +
           room.members.fold<int>(
             0,
             (memberSum, member) =>
@@ -790,15 +1928,15 @@ class AppState extends ChangeNotifier {
     final avgScore = _averageScore(recent7Days).round();
     final totalCoins = recent7Days.fold<int>(
       0,
-      (sum, item) => sum + item.coinsEarned,
+      (acc, item) => acc + item.coinsEarned,
     );
     final autoTrackedCompleted = recent7Days.fold<int>(
       0,
-      (sum, item) => sum + item.autoTrackedCompleted,
+      (acc, item) => acc + item.autoTrackedCompleted,
     );
     final healthTaskCompleted = recent7Days.fold<int>(
       0,
-      (sum, item) => sum + item.healthCompleted,
+      (acc, item) => acc + item.healthCompleted,
     );
 
     final roomFocusMinutes = _totalStudyRoomFocusMinutes();
@@ -972,7 +2110,7 @@ class AppState extends ChangeNotifier {
   bool isCurrentUserOwner(String roomId) {
     final room = getStudyRoomById(roomId);
     if (room == null) return false;
-    return room.ownerId == 'local_user' || room.ownerName == _profileNickname;
+    return room.ownerId == _myId || room.ownerName == _profileNickname;
   }
 
   ThemeMode get currentThemeMode {
@@ -987,6 +2125,15 @@ class AppState extends ChangeNotifier {
   }
 
   Color get currentIconColor {
+    if (_userRole == 'guardian') {
+      return const Color(0xFFF59E0B); // 家長模式：暖橘色
+    } else if (_userRole == 'group' ||
+        _userRole == 'enterprise' ||
+        _userRole == 'tutor' ||
+        _userRole == 'school') {
+      return const Color(0xFF10B981); // 團體班級模式：活力綠色
+    }
+
     switch (_iconColorSetting) {
       case 'blue':
         return const Color(0xFF4F8CFF);
@@ -1039,7 +2186,7 @@ class AppState extends ChangeNotifier {
       }
 
       final meIndex = room.members.indexWhere(
-        (m) => m.memberId == 'local_user',
+        (m) => m.memberId == _myId || m.memberId == 'local_user',
       );
       if (meIndex == -1) continue;
 
@@ -1056,6 +2203,7 @@ class AppState extends ChangeNotifier {
 
     if (taskIndex != -1) {
       _tasks[taskIndex]['done'] = reached;
+      _tasks[taskIndex]['isDone'] = reached;
       _tasks[taskIndex]['updatedAt'] = DateTime.now().toIso8601String();
       _tasks[taskIndex]['completedAt'] = reached
           ? DateTime.now().toIso8601String()
@@ -1082,6 +2230,14 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  int _readTaskFocusStartSeconds(Map<String, dynamic> task) {
+    final rawValue = task['trackingStartFocusSeconds'];
+    if (rawValue is int) return rawValue;
+    if (rawValue is double) return rawValue.round();
+    if (rawValue is String) return int.tryParse(rawValue) ?? 0;
+    return 0;
+  }
+
   double _autoTrackedValueForTask(Map<String, dynamic> task) {
     final sourceType = _readTaskSourceType(task);
     final sourceId = task['sourceId'] as String?;
@@ -1089,7 +2245,9 @@ class AppState extends ChangeNotifier {
     if (sourceId != null && sourceId.isNotEmpty) {
       final room = getStudyRoomById(sourceId);
       if (room != null) {
-        final me = room.members.where((m) => m.memberId == 'local_user');
+        final me = room.members.where(
+          (m) => m.memberId == _myId || m.memberId == 'local_user',
+        );
         if (me.isNotEmpty) {
           final member = me.first;
           if (!member.isApproved) return 0;
@@ -1103,6 +2261,12 @@ class AppState extends ChangeNotifier {
           };
         }
       }
+    }
+
+    if (sourceType == TaskSourceType.focusMinutes) {
+      final trackedSeconds = _focusSeconds - _readTaskFocusStartSeconds(task);
+      if (trackedSeconds <= 0) return 0;
+      return trackedSeconds / 60;
     }
 
     return _autoTrackedValueForSource(sourceType);
@@ -1215,7 +2379,7 @@ class AppState extends ChangeNotifier {
 
     for (final room in _studyRooms) {
       for (final member in room.members) {
-        if (member.memberId == 'local_user' &&
+        if ((member.memberId == _myId || member.memberId == 'local_user') &&
             member.todayFocusSeconds > maxSeconds) {
           maxSeconds = member.todayFocusSeconds;
         }
@@ -1252,14 +2416,16 @@ class AppState extends ChangeNotifier {
 
       final value = _currentMetricValueForSource(room.goalSourceType);
       final members = List<StudyMemberData>.from(room.members);
-      final meIndex = members.indexWhere((m) => m.memberId == 'local_user');
+      final meIndex = members.indexWhere(
+        (m) => m.memberId == _myId || m.memberId == 'local_user',
+      );
       final reached = value >= room.dailyGoalValue;
 
       if (meIndex == -1) {
         members.insert(
           0,
           StudyMemberData(
-            memberId: 'local_user',
+            memberId: _myId,
             name: _profileNickname,
             roomNickname: _profileNickname,
             status: reached
@@ -1375,12 +2541,14 @@ class AppState extends ChangeNotifier {
 
       final reached = _autoTrackedValueForTask(task) >= targetValue;
       final wasDone = task['done'] as bool? ?? false;
+      final wasIsDone = task['isDone'] as bool? ?? wasDone;
 
-      if (wasDone == reached) return task;
+      if (wasDone == reached && wasIsDone == reached) return task;
 
       return {
         ...task,
         'done': reached,
+        'isDone': reached,
         'updatedAt': now,
         'completedAt': reached ? now : null,
       };
@@ -1456,13 +2624,13 @@ class AppState extends ChangeNotifier {
     final scoreTasks = _tasks.where((task) => _taskRewardWeight(task) > 0);
     final totalWeight = scoreTasks.fold<double>(
       0,
-      (sum, task) => sum + _taskRewardWeight(task),
+      (acc, task) => acc + _taskRewardWeight(task),
     );
     if (totalWeight <= 0) return 0;
 
     final completedWeight = scoreTasks
         .where((task) => task['done'] == true)
-        .fold<double>(0, (sum, task) => sum + _taskRewardWeight(task));
+        .fold<double>(0, (acc, task) => acc + _taskRewardWeight(task));
 
     return ((completedWeight / totalWeight) * 100).round().clamp(0, 100);
   }
@@ -1510,19 +2678,26 @@ class AppState extends ChangeNotifier {
   void _unlockCurrentAvatarProfile() {
     _unlockedAvatarItemKeys.addAll({
       avatarItemKey('faceShape', _avatarProfile.faceShapeIndex),
+      avatarItemKey('appBackground', 0),
     });
   }
 
   void _unlockAllAvatarItemsForPreview() {
-    for (final category in AvatarCatalog.shopCategories) {
-      for (var i = 0; i < category.itemCount; i++) {
-        _unlockedAvatarItemKeys.add(avatarItemKey(category.key, i));
-      }
-    }
+    _unlockCurrentAvatarProfile();
   }
 
   Future<bool> purchaseAvatarItem(String category, int index) async {
     if (isAvatarItemUnlocked(category, index)) return true;
+    if (category == 'appBackground' &&
+        (index < 0 || index >= AppUI.backgroundThemeKeys.length)) {
+      return false;
+    }
+    if (category == 'faceShape' && !isAvatarEvolutionStageUnlocked(index)) {
+      final stage = AvatarCatalog.stageForIndex(index);
+      if (stage.stage != 1 || stage.coinPrice <= 0) {
+        return false;
+      }
+    }
 
     final price = avatarItemPrice(category, index);
     if (_disciplineCoins < price) return false;
@@ -1556,6 +2731,7 @@ class AppState extends ChangeNotifier {
               'sourceType': task['sourceType'],
               'targetValue': task['targetValue'],
               'unitLabel': task['unitLabel'],
+              'trackingStartFocusSeconds': task['trackingStartFocusSeconds'],
               'id': task['id'],
               'userId': task['userId'],
               'sourceId': task['sourceId'],
@@ -1577,6 +2753,10 @@ class AppState extends ChangeNotifier {
       await _loadAppearanceSettings();
 
       final prefs = await SharedPreferences.getInstance();
+      _userRole = prefs.getString('user_role_setting') ?? 'personal';
+      _groupId = prefs.getString('group_id_setting');
+      _groupName = prefs.getString('group_name_setting');
+      _isGroupOwner = prefs.getBool('is_group_owner_setting') ?? false;
       if (prefs.containsKey(_focusSecondsKey)) {
         _focusSeconds = prefs.getInt(_focusSecondsKey) ?? 0;
       } else {
@@ -1588,12 +2768,16 @@ class AppState extends ChangeNotifier {
       await _loadFriendIdentityAndRequests();
       await _loadCurrentUser();
       await _loadPrivacyConsent();
+      await _loadOnboardingState();
       await _loadReminderSettings();
       await _loadSocialEncouragementRecords();
       await _loadUnlockedBadges();
       await _loadSeenUnlockedBadges();
       final hasRewardState = await _loadRewardState();
       await _loadAvatarUnlockState();
+      await _loadAvatarExperienceLedger();
+      _normalizeBackgroundThemeSettingForUnlocks();
+      _normalizeAvatarProfileForCatalog();
 
       await _checkAndPerformDailyResetIfNeeded();
       _syncMyHealthMetricsAcrossRooms();
@@ -1606,11 +2790,15 @@ class AppState extends ChangeNotifier {
         _markCompletedTasksAsRewardedForToday();
         await _saveRewardState();
       }
+      await checkWeeklyPlanetSettlement();
       _unlockCurrentAvatarProfile();
       _unlockAllAvatarItemsForPreview();
       await _saveAvatarUnlockState();
       _syncTodaySummary();
+      _isHydrated = true;
       notifyListeners();
+      await _rescheduleLocalReminders();
+      _scheduleNextDailyResetTimer();
     } catch (e) {
       debugPrint('load data error: $e');
       _tasks = List<Map<String, dynamic>>.from(_defaultTasks);
@@ -1622,12 +2810,16 @@ class AppState extends ChangeNotifier {
       await _loadFriendIdentityAndRequests();
       await _loadCurrentUser();
       await _loadPrivacyConsent();
+      await _loadOnboardingState();
       await _loadReminderSettings();
       await _loadSocialEncouragementRecords();
       await _loadUnlockedBadges();
       await _loadSeenUnlockedBadges();
       final hasRewardState = await _loadRewardState();
       await _loadAvatarUnlockState();
+      await _loadAvatarExperienceLedger();
+      _normalizeBackgroundThemeSettingForUnlocks();
+      _normalizeAvatarProfileForCatalog();
       await _checkAndPerformDailyResetIfNeeded();
       _syncMyHealthMetricsAcrossRooms();
       _syncStudyRoomGoalTasks();
@@ -1639,11 +2831,15 @@ class AppState extends ChangeNotifier {
         _markCompletedTasksAsRewardedForToday();
         await _saveRewardState();
       }
+      await checkWeeklyPlanetSettlement();
       _unlockCurrentAvatarProfile();
       _unlockAllAvatarItemsForPreview();
       await _saveAvatarUnlockState();
       _syncTodaySummary();
+      _isHydrated = true;
       notifyListeners();
+      await _rescheduleLocalReminders();
+      _scheduleNextDailyResetTimer();
     }
   }
 
@@ -1669,7 +2865,7 @@ class AppState extends ChangeNotifier {
     } else {
       _avatarProfile = AvatarProfile.initial();
     }
-    _normalizeAvatarProfileForCatalog();
+    _normalizeAvatarProfileForCatalog(enforceUnlocks: false);
   }
 
   int _clampAvatarIndex(int value, int length) {
@@ -1677,16 +2873,20 @@ class AppState extends ChangeNotifier {
     return value.clamp(0, length - 1).toInt();
   }
 
-  void _normalizeAvatarProfileForCatalog() {
+  void _normalizeBackgroundThemeSettingForUnlocks() {
+    final index = AppUI.backgroundThemeKeys.indexOf(_backgroundThemeSetting);
+    if (index < 0 || !isAvatarItemUnlocked('appBackground', index)) {
+      _backgroundThemeSetting = 'softGlow';
+    }
+  }
+
+  void _normalizeAvatarProfileForCatalog({bool enforceUnlocks = true}) {
     _avatarProfile = _avatarProfile.copyWith(
       skinToneIndex: _clampAvatarIndex(
         _avatarProfile.skinToneIndex,
         AvatarProfile.skinTones.length,
       ),
-      faceShapeIndex: _clampAvatarIndex(
-        _avatarProfile.faceShapeIndex,
-        AvatarCatalog.faceShapeLabels.length,
-      ),
+      faceShapeIndex: _normalizeAvatarStageIndex(_avatarProfile.faceShapeIndex),
       hairStyleIndex: _clampAvatarIndex(
         _avatarProfile.hairStyleIndex,
         AvatarCatalog.hairStyleLabels.length,
@@ -1723,7 +2923,49 @@ class AppState extends ChangeNotifier {
         _avatarProfile.backgroundColorIndex,
         AvatarProfile.backgroundColors.length,
       ),
+      avatarIconIndex: _normalizeAvatarStageIndex(
+        _avatarProfile.avatarIconIndex,
+      ),
     );
+    if (!enforceUnlocks) return;
+    if (!isAvatarEvolutionStageUnlocked(_avatarProfile.faceShapeIndex)) {
+      final series = AvatarCatalog.stageForIndex(
+        _avatarProfile.faceShapeIndex,
+      ).series;
+      _avatarProfile = _avatarProfile.copyWith(
+        faceShapeIndex: _highestUnlockedAvatarStageIndex(series: series),
+      );
+    }
+    if (!isAvatarIconUnlocked(_avatarProfile.avatarIconIndex)) {
+      final series = AvatarCatalog.stageForIndex(
+        _avatarProfile.avatarIconIndex,
+      ).series;
+      _avatarProfile = _avatarProfile.copyWith(
+        avatarIconIndex: _highestUnlockedAvatarStageIndex(series: series),
+      );
+    }
+  }
+
+  int _normalizeAvatarStageIndex(int index) {
+    final exists = AvatarCatalog.evolutionStages.any(
+      (stage) => stage.index == index,
+    );
+    if (exists) return index;
+    return AvatarCatalog.evolutionStages.first.index;
+  }
+
+  int _highestUnlockedAvatarStageIndex({String? series}) {
+    var highest = 0;
+    var hasMatch = false;
+    for (final stage in AvatarCatalog.evolutionStages) {
+      if (series != null && stage.series != series) continue;
+      hasMatch = true;
+      if (isAvatarEvolutionStageUnlocked(stage.index)) {
+        highest = math.max(highest, stage.index);
+      }
+    }
+    if (hasMatch) return highest;
+    return AvatarCatalog.evolutionStages.first.index;
   }
 
   Future<void> _saveAppearanceSettings() async {
@@ -1738,16 +2980,19 @@ class AppState extends ChangeNotifier {
       _avatarProfileKey,
       jsonEncode(_avatarProfile.toJson()),
     );
+    await syncDataToFirestore();
   }
 
   Future<void> _saveTasks() async {
     await LocalStorageService.saveTasks(_tasks);
+    await syncDataToFirestore();
   }
 
   Future<void> _saveFocusTime() async {
     await LocalStorageService.saveFocusMinutes(focusMinutes);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_focusSecondsKey, _focusSeconds);
+    await syncDataToFirestore();
   }
 
   Future<void> _saveHealthData() async {
@@ -1757,10 +3002,12 @@ class AppState extends ChangeNotifier {
       exerciseMinutes: _exerciseMinutes,
       isHealthConnected: _isHealthConnected,
     );
+    await syncDataToFirestore();
   }
 
   Future<void> _saveDailySummaries() async {
     await LocalStorageService.saveDailySummaries(_dailySummaries);
+    await syncDataToFirestore();
   }
 
   Future<bool> _loadRewardState() async {
@@ -1772,6 +3019,10 @@ class AppState extends ChangeNotifier {
         prefs.containsKey(_monthlyDeadlineCoinEarnedKey);
 
     _disciplineCoins = prefs.getInt(_disciplineCoinsKey) ?? 0;
+    _unlockedPlanets = prefs.getStringList(_unlockedPlanetsKey) ?? ['新手星球'];
+    _planetCount = _unlockedPlanets.length - 1;
+    _weeklyPlanetEarned = prefs.getBool(_weeklyPlanetEarnedKey) ?? false;
+    _lastSettledWeekMonday = prefs.getString(_lastSettledWeekMondayKey);
     _rewardedTaskKeys =
         (prefs.getStringList(_rewardedTaskKeysKey) ?? const <String>[]).toSet();
     final dailyEarnedRaw = prefs.getString(_dailyCoinEarnedKey);
@@ -1800,12 +3051,21 @@ class AppState extends ChangeNotifier {
   Future<void> _saveRewardState() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_disciplineCoinsKey, _disciplineCoins);
+    await prefs.setInt(_planetCountKey, _planetCount);
+    await prefs.setStringList(_unlockedPlanetsKey, _unlockedPlanets);
+    await prefs.setBool(_weeklyPlanetEarnedKey, _weeklyPlanetEarned);
+    await prefs.setString(
+      _lastSettledWeekMondayKey,
+      _lastSettledWeekMonday ?? '',
+    );
     await prefs.setStringList(_rewardedTaskKeysKey, _rewardedTaskKeys.toList());
     await prefs.setString(_dailyCoinEarnedKey, jsonEncode(_dailyCoinEarned));
     await prefs.setString(
       _monthlyDeadlineCoinEarnedKey,
       jsonEncode(_monthlyDeadlineCoinEarned),
     );
+    notifyListeners();
+    await syncDataToFirestore();
   }
 
   Future<void> _loadAvatarUnlockState() async {
@@ -1815,20 +3075,106 @@ class AppState extends ChangeNotifier {
             .toSet();
   }
 
+  Future<void> _loadAvatarExperienceLedger() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_avatarExperienceLedgerKey);
+    if (raw == null || raw.isEmpty) {
+      _avatarExperienceLedger = <String, Map<String, int>>{};
+      _migrateLegacyAvatarExperienceLedger();
+      await _saveAvatarExperienceLedger();
+      return;
+    }
+
+    try {
+      final decoded = jsonDecode(raw) as Map;
+      _avatarExperienceLedger = decoded.map((date, value) {
+        final rawSeries = value is Map ? value : const <String, dynamic>{};
+        final seriesMap = rawSeries.map(
+          (series, experience) =>
+              MapEntry(series.toString(), (experience as num?)?.round() ?? 0),
+        )..removeWhere((_, experience) => experience <= 0);
+        return MapEntry(date.toString(), seriesMap);
+      })..removeWhere((_, seriesMap) => seriesMap.isEmpty);
+    } catch (_) {
+      _avatarExperienceLedger = <String, Map<String, int>>{};
+      _migrateLegacyAvatarExperienceLedger();
+      await _saveAvatarExperienceLedger();
+    }
+  }
+
+  void _migrateLegacyAvatarExperienceLedger() {
+    if (_dailySummaries.isEmpty) return;
+    final series = currentAvatarSeries;
+    _avatarExperienceLedger = <String, Map<String, int>>{};
+    for (final summary in _dailySummaries) {
+      final experience = avatarExperienceForSummary(summary);
+      if (experience <= 0) continue;
+      _avatarExperienceLedger[summary.date] = {series: experience};
+    }
+  }
+
   Future<void> _saveAvatarUnlockState() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(
       _unlockedAvatarItemsKey,
       _unlockedAvatarItemKeys.toList(),
     );
+    await syncDataToFirestore();
+  }
+
+  Future<void> _saveAvatarExperienceLedger() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _avatarExperienceLedgerKey,
+      jsonEncode(_avatarExperienceLedger),
+    );
+    await syncDataToFirestore();
   }
 
   Future<void> _saveStudyRooms() async {
+    // Always persist locally for offline access
     final prefs = await SharedPreferences.getInstance();
     final encoded = jsonEncode(
       _studyRooms.map((room) => room.toJson()).toList(),
     );
     await prefs.setString(_studyRoomsKey, encoded);
+
+    // Also write to Firestore when signed in
+    final user = _currentUser;
+    if (user == null) return;
+
+    final batch = FirebaseFirestore.instance.batch();
+    for (final room in _studyRooms) {
+      // Only skip rooms that are purely demo/local placeholders
+      if (room.id.startsWith('room_demo_')) continue;
+
+      final data = room.toJson();
+      // Add the memberIds array so we can query rooms by member
+      final memberIds = room.members
+          .where((m) => m.isApproved)
+          .map(
+            (m) => (m.memberId == _myId || m.memberId == 'local_user')
+                ? user.id
+                : m.memberId,
+          )
+          .where((id) => id.isNotEmpty && id != 'local_user')
+          .toSet()
+          .toList();
+      // Always include the current user
+      if (!memberIds.contains(user.id)) memberIds.add(user.id);
+      data['memberIds'] = memberIds;
+      data['updatedAt'] = FieldValue.serverTimestamp();
+
+      final docRef = FirebaseFirestore.instance
+          .collection('rooms')
+          .doc(room.id);
+      batch.set(docRef, data, SetOptions(merge: true));
+    }
+    try {
+      await batch.commit();
+    } catch (e) {
+      debugPrint('Failed to sync rooms to Firestore: $e');
+    }
   }
 
   Future<void> _saveSocialFriends() async {
@@ -1837,6 +3183,7 @@ class AppState extends ChangeNotifier {
       _socialFriends.map((friend) => friend.toJson()).toList(),
     );
     await prefs.setString(_socialFriendsKey, encoded);
+    await syncDataToFirestore();
   }
 
   Future<void> _saveFriendIdentityAndRequests() async {
@@ -1846,6 +3193,7 @@ class AppState extends ChangeNotifier {
       _friendRequestsKey,
       jsonEncode(_friendRequests.map((request) => request.toJson()).toList()),
     );
+    await syncDataToFirestore();
   }
 
   Future<void> _saveCurrentUser() async {
@@ -1883,6 +3231,25 @@ class AppState extends ChangeNotifier {
     _privacyAcceptedAt = DateTime.now();
     notifyListeners();
     await _savePrivacyConsent();
+  }
+
+  Future<void> _loadOnboardingState() async {
+    final prefs = await SharedPreferences.getInstance();
+    _hasCompletedOnboarding = prefs.getBool(_onboardingCompletedKey) ?? false;
+  }
+
+  Future<void> completeOnboarding() async {
+    _hasCompletedOnboarding = true;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_onboardingCompletedKey, true);
+  }
+
+  Future<void> resetOnboardingForPreview() async {
+    _hasCompletedOnboarding = false;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_onboardingCompletedKey, false);
   }
 
   Future<void> revokePrivacyPolicyConsent() async {
@@ -1936,6 +3303,7 @@ class AppState extends ChangeNotifier {
     }).toList();
     notifyListeners();
     await _saveReminderSettings();
+    await _rescheduleLocalReminders();
   }
 
   Future<void> setReminderTime(String key, String timeLabel) async {
@@ -1945,6 +3313,19 @@ class AppState extends ChangeNotifier {
     }).toList();
     notifyListeners();
     await _saveReminderSettings();
+    await _rescheduleLocalReminders();
+  }
+
+  Future<bool> requestNotificationPermissionAndSchedule() async {
+    final granted = await NotificationService.requestPermission();
+    if (granted) {
+      await _rescheduleLocalReminders();
+    }
+    return granted;
+  }
+
+  Future<void> _rescheduleLocalReminders() async {
+    await NotificationService.scheduleDailyReminders(localReminderRequests);
   }
 
   Future<void> _saveSocialEncouragementRecords() async {
@@ -1956,6 +3337,29 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _loadStudyRooms() async {
+    // Try to load from Firestore first (when signed in)
+    final user = _currentUser;
+    if (user != null) {
+      try {
+        final snap = await FirebaseFirestore.instance
+            .collection('rooms')
+            .where('memberIds', arrayContains: user.id)
+            .get();
+        if (snap.docs.isNotEmpty) {
+          _studyRooms = snap.docs
+              .map((doc) => StudyRoomData.fromJson(doc.data()))
+              .toList();
+          _syncMyFocusSecondsAcrossRooms();
+          return;
+        }
+      } catch (e) {
+        debugPrint(
+          'Failed to load rooms from Firestore, falling back to local: $e',
+        );
+      }
+    }
+
+    // Fallback: load from SharedPreferences
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_studyRoomsKey);
 
@@ -2131,11 +3535,11 @@ class AppState extends ChangeNotifier {
   void _initDefaultStudyRooms() {
     _studyRooms = [
       StudyRoomData(
-        id: 'room_midterm',
+        id: 'room_demo_midterm',
         name: '期中衝刺房',
         description: '一起把今天最重要的進度推完',
         accentColor: const Color(0xFF7C6AE6),
-        ownerId: 'local_user',
+        ownerId: _myId,
         ownerName: _profileNickname,
         announcement: '今晚 11 點前一起完成最重要的一項進度。',
         tags: const ['考試衝刺', '高效率'],
@@ -2156,7 +3560,7 @@ class AppState extends ChangeNotifier {
         challengeCompleted: false,
         members: [
           StudyMemberData(
-            memberId: 'local_user',
+            memberId: _myId,
             name: _profileNickname,
             roomNickname: _profileNickname,
             status: StudyMemberStatus.offline,
@@ -2207,11 +3611,11 @@ class AppState extends ChangeNotifier {
         ],
       ),
       StudyRoomData(
-        id: 'room_morning',
+        id: 'room_demo_morning',
         name: '早八自律房',
         description: '早上先進入專注狀態的人都在這',
         accentColor: const Color(0xFF4F8CFF),
-        ownerId: 'local_user',
+        ownerId: _myId,
         ownerName: _profileNickname,
         announcement: '今天早上先完成一輪 50 分鐘專注。',
         tags: const ['早起房', '晨讀'],
@@ -2232,7 +3636,7 @@ class AppState extends ChangeNotifier {
         challengeCompleted: false,
         members: [
           StudyMemberData(
-            memberId: 'local_user',
+            memberId: _myId,
             name: _profileNickname,
             roomNickname: _profileNickname,
             status: StudyMemberStatus.offline,
@@ -2271,11 +3675,11 @@ class AppState extends ChangeNotifier {
         ],
       ),
       StudyRoomData(
-        id: 'room_night',
+        id: 'room_demo_night',
         name: '夜讀靜音房',
         description: '晚上安靜讀書，互相盯進度',
         accentColor: const Color(0xFF10B981),
-        ownerId: 'local_user',
+        ownerId: _myId,
         ownerName: _profileNickname,
         announcement: '靜音自習，不聊天，專心把今天收尾。',
         tags: const ['夜讀', '靜音房'],
@@ -2296,7 +3700,7 @@ class AppState extends ChangeNotifier {
         challengeCompleted: false,
         members: [
           StudyMemberData(
-            memberId: 'local_user',
+            memberId: _myId,
             name: _profileNickname,
             roomNickname: _profileNickname,
             status: StudyMemberStatus.offline,
@@ -2357,7 +3761,143 @@ class AppState extends ChangeNotifier {
   }
 
   String _todayKey() {
-    return _formatDate(DateTime.now());
+    return _formatDate(DateTime.now().subtract(const Duration(hours: 5)));
+  }
+
+  DateTime getMonday5AMOfThisWeek(DateTime time) {
+    final daysToSubtract = time.weekday - 1;
+    final monday = DateTime(
+      time.year,
+      time.month,
+      time.day,
+    ).subtract(Duration(days: daysToSubtract));
+    return DateTime(monday.year, monday.month, monday.day, 5, 0, 0);
+  }
+
+  double calculateWeeklyAverageScore(DateTime weekStartMonday) {
+    int totalScore = 0;
+    for (int i = 0; i < 7; i++) {
+      final date = weekStartMonday.add(Duration(days: i));
+      final dateStr = _formatDate(date);
+      final summary = _dailySummaries.firstWhere(
+        (s) => s.date == dateStr,
+        orElse: () => DailySummary(
+          date: dateStr,
+          completedTasks: 0,
+          totalTasks: 0,
+          focusMinutes: 0,
+          sleepHours: 0.0,
+          steps: 0,
+          exerciseMinutes: 0,
+          disciplineScore: 0,
+        ),
+      );
+      totalScore += summary.disciplineScore;
+    }
+    return totalScore / 7.0;
+  }
+
+  double calculateWeeklyTaskCompletionRate(DateTime weekStartMonday) {
+    int completed = 0;
+    int total = 0;
+    for (int i = 0; i < 7; i++) {
+      final date = weekStartMonday.add(Duration(days: i));
+      final dateStr = _formatDate(date);
+      final summary = _dailySummaries.firstWhere(
+        (s) => s.date == dateStr,
+        orElse: () => DailySummary(
+          date: dateStr,
+          completedTasks: 0,
+          totalTasks: 0,
+          focusMinutes: 0,
+          sleepHours: 0.0,
+          steps: 0,
+          exerciseMinutes: 0,
+          disciplineScore: 0,
+        ),
+      );
+      completed += summary.completedTasks;
+      total += summary.totalTasks;
+    }
+    if (total == 0) return 0.0;
+    return (completed / total) * 100.0;
+  }
+
+  List<String> _parseUnlockedPlanets(Map<String, dynamic> data) {
+    if (data['unlockedPlanets'] != null) {
+      return List<String>.from(data['unlockedPlanets']);
+    }
+    final count = (data['planetCount'] as num?)?.toInt() ?? 0;
+    final list = <String>['新手星球'];
+    final planetsPool = ["綠洲星球", "熔岩星球", "冰雪星球", "沙漠星球", "水晶星球", "暗物質星球"];
+    for (int i = 0; i < count; i++) {
+      final available = planetsPool.where((p) => !list.contains(p)).toList();
+      if (available.isNotEmpty) {
+        list.add(available[i % available.length]);
+      }
+    }
+    return list;
+  }
+
+  Future<void> checkWeeklyPlanetSettlement() async {
+    final now = DateTime.now();
+    final currentMonday5AM = getMonday5AMOfThisWeek(now);
+
+    // The target completed settlement Monday is the last Monday 5:00 AM before now
+    final targetSettlementMonday = now.isBefore(currentMonday5AM)
+        ? currentMonday5AM.subtract(const Duration(days: 7))
+        : currentMonday5AM;
+
+    DateTime nextWeekStartMonday;
+    if (_lastSettledWeekMonday == null || _lastSettledWeekMonday!.isEmpty) {
+      if (_dailySummaries.isNotEmpty) {
+        final sortedSummaries = List<DailySummary>.from(_dailySummaries)
+          ..sort((a, b) => a.date.compareTo(b.date));
+        final firstDate = DateTime.tryParse(sortedSummaries.first.date) ?? now;
+        nextWeekStartMonday = getMonday5AMOfThisWeek(firstDate);
+      } else {
+        nextWeekStartMonday = getMonday5AMOfThisWeek(
+          now,
+        ).subtract(const Duration(days: 7));
+      }
+    } else {
+      final lastSettled = DateTime.tryParse(_lastSettledWeekMonday!);
+      if (lastSettled == null) {
+        nextWeekStartMonday = getMonday5AMOfThisWeek(
+          now,
+        ).subtract(const Duration(days: 7));
+      } else {
+        nextWeekStartMonday = lastSettled.add(const Duration(days: 7));
+      }
+    }
+
+    bool changed = false;
+    while (nextWeekStartMonday.isBefore(targetSettlementMonday) ||
+        nextWeekStartMonday.isAtSameMomentAs(targetSettlementMonday)) {
+      final rate = calculateWeeklyTaskCompletionRate(nextWeekStartMonday);
+      if (rate >= 70.0) {
+        final planetsPool = ["綠洲星球", "熔岩星球", "冰雪星球", "沙漠星球", "水晶星球", "暗物質星球"];
+        final available = planetsPool
+            .where((p) => !_unlockedPlanets.contains(p))
+            .toList();
+        if (available.isNotEmpty) {
+          final randomPlanet = (available..shuffle()).first;
+          _unlockedPlanets.add(randomPlanet);
+        }
+        _planetCount = _unlockedPlanets.length - 1;
+        _weeklyPlanetEarned = true;
+      } else {
+        _weeklyPlanetEarned = false;
+      }
+      _lastSettledWeekMonday = _formatDate(nextWeekStartMonday);
+      changed = true;
+
+      nextWeekStartMonday = nextWeekStartMonday.add(const Duration(days: 7));
+    }
+
+    if (changed) {
+      await _saveRewardState();
+    }
   }
 
   DateTime _currentWeekStart() {
@@ -2367,12 +3907,12 @@ class AppState extends ChangeNotifier {
   }
 
   int _coinEarnedBetween(DateTime start, DateTime end) {
-    return _dailyCoinEarned.entries.fold<int>(0, (sum, entry) {
+    return _dailyCoinEarned.entries.fold<int>(0, (acc, entry) {
       final date = DateTime.tryParse(entry.key);
-      if (date == null) return sum;
+      if (date == null) return acc;
       final day = DateTime(date.year, date.month, date.day);
-      if (day.isBefore(start) || !day.isBefore(end)) return sum;
-      return sum + entry.value;
+      if (day.isBefore(start) || !day.isBefore(end)) return acc;
+      return acc + entry.value;
     });
   }
 
@@ -2388,10 +3928,116 @@ class AppState extends ChangeNotifier {
     return '$y-$m';
   }
 
+  void _syncSummaryForDate(String date) {
+    final todayTasks = _tasks.where(_isTodayActionableTask).toList();
+    final completedCount = todayTasks
+        .where((task) => task['done'] == true)
+        .length;
+    final autoTrackedTasks = todayTasks.where((task) {
+      final isAutoTracked = task['isAutoTracked'] as bool? ?? false;
+      final isSystemTask = task['isSystemTask'] as bool? ?? false;
+      return isAutoTracked || isSystemTask;
+    }).toList();
+    final healthSources = {
+      TaskSourceType.sleepHours,
+      TaskSourceType.steps,
+      TaskSourceType.exerciseMinutes,
+    };
+    final focusSources = {TaskSourceType.focusMinutes};
+    final roomSources = {TaskSourceType.studyRoom};
+
+    final summary = DailySummary(
+      date: date,
+      completedTasks: completedCount,
+      totalTasks: todayTasks.length,
+      focusMinutes: focusMinutes,
+      sleepHours: _sleepHours,
+      steps: _steps,
+      exerciseMinutes: _exerciseMinutes,
+      disciplineScore: _weightedTaskScore(),
+      coinsEarned: _dailyCoinEarned[date] ?? 0,
+      autoTrackedCompleted: autoTrackedTasks
+          .where((task) => task['done'] as bool? ?? false)
+          .length,
+      autoTrackedTotal: autoTrackedTasks.length,
+      healthCompleted: _countTasksBySource(healthSources, completed: true),
+      healthTotal: _countTasksBySource(healthSources),
+      roomCompleted: _countTasksBySource(roomSources, completed: true),
+      roomTotal: _countTasksBySource(roomSources),
+      focusCompleted: _countTasksBySource(focusSources, completed: true),
+      focusTotal: _countTasksBySource(focusSources),
+      autoTrackedSources: _autoTrackedSourceLabels(),
+    );
+
+    final index = _dailySummaries.indexWhere((item) => item.date == date);
+
+    if (index >= 0) {
+      _dailySummaries[index] = summary;
+    } else {
+      _dailySummaries.add(summary);
+    }
+
+    _saveDailySummaries();
+    _syncAvatarExperienceLedgerForSummary(summary);
+  }
+
+  void _checkDailyResetSync() {
+    final today = _todayKey();
+    if (_lastResetDateInMemory != null && _lastResetDateInMemory != today) {
+      final lastResetDate = _lastResetDateInMemory!;
+      _syncSummaryForDate(lastResetDate);
+
+      _resetDailyTasks();
+      _resetDailyFocusAndStudyRooms();
+      _syncStudyGoalTaskCompletion();
+      _syncAutoTrackedTasks();
+      _syncTaskRewards();
+      _syncTodaySummary();
+
+      _lastResetDateInMemory = today;
+      notifyListeners();
+
+      _saveAfterReset(today);
+    }
+  }
+
+  DateTime _nextDailyResetBoundary(DateTime now) {
+    final todayAtFive = DateTime(now.year, now.month, now.day, 5);
+    if (now.isBefore(todayAtFive)) return todayAtFive;
+    return todayAtFive.add(const Duration(days: 1));
+  }
+
+  void _scheduleNextDailyResetTimer() {
+    _dailyResetTimer?.cancel();
+
+    final now = DateTime.now();
+    final nextReset = _nextDailyResetBoundary(now);
+    final delay = nextReset.difference(now) + const Duration(seconds: 2);
+
+    _dailyResetTimer = Timer(delay, () {
+      _checkDailyResetSync();
+      _scheduleNextDailyResetTimer();
+    });
+  }
+
+  Future<void> _saveAfterReset(String today) async {
+    await checkWeeklyPlanetSettlement();
+    await _saveRewardState();
+    await _saveTasks();
+    await _saveFocusTime();
+    await _saveHealthData();
+    await _saveStudyRooms();
+    await _saveDailySummaries();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_lastDailyResetDateKey, today);
+  }
+
   Future<void> _checkAndPerformDailyResetIfNeeded() async {
     final prefs = await SharedPreferences.getInstance();
     final today = _todayKey();
     final lastResetDate = prefs.getString(_lastDailyResetDateKey);
+
+    _lastResetDateInMemory = lastResetDate ?? today;
 
     if (lastResetDate == null) {
       await prefs.setString(_lastDailyResetDateKey, today);
@@ -2402,6 +4048,7 @@ class AppState extends ChangeNotifier {
       return;
     }
 
+    _syncSummaryForDate(lastResetDate);
     _resetDailyTasks();
     _resetDailyFocusAndStudyRooms();
     _syncStudyGoalTaskCompletion();
@@ -2409,12 +4056,9 @@ class AppState extends ChangeNotifier {
     _syncTaskRewards();
     _syncTodaySummary();
 
-    await _saveTasks();
-    await _saveFocusTime();
-    await _saveHealthData();
-    await _saveStudyRooms();
-    await _saveDailySummaries();
-    await prefs.setString(_lastDailyResetDateKey, today);
+    _lastResetDateInMemory = today;
+
+    await _saveAfterReset(today);
   }
 
   void _resetDailyTasks() {
@@ -2422,9 +4066,16 @@ class AppState extends ChangeNotifier {
       final taskType = (task['taskType'] ?? 'fixed') as String;
 
       if (taskType == 'fixed') {
+        final isFocusTask =
+            (task['isAutoTracked'] as bool? ?? false) &&
+            _readTaskSourceType(task) == TaskSourceType.focusMinutes &&
+            (task['sourceId'] as String? ?? '').isEmpty;
+
         return {
           ...task,
           'done': false,
+          'isDone': false,
+          if (isFocusTask) 'trackingStartFocusSeconds': 0,
           'updatedAt': DateTime.now().toIso8601String(),
           'completedAt': null,
         };
@@ -2531,8 +4182,7 @@ class AppState extends ChangeNotifier {
     return labels.toList()..sort();
   }
 
-  void _syncTodaySummary() {
-    final today = _todayKey();
+  DailySummary _buildTodayExperienceSummary() {
     final todayTasks = _tasks.where(_isTodayActionableTask).toList();
     final completedCount = todayTasks
         .where((task) => task['done'] == true)
@@ -2550,8 +4200,8 @@ class AppState extends ChangeNotifier {
     final focusSources = {TaskSourceType.focusMinutes};
     final roomSources = {TaskSourceType.studyRoom};
 
-    final summary = DailySummary(
-      date: today,
+    return DailySummary(
+      date: _todayKey(),
       completedTasks: completedCount,
       totalTasks: todayTasks.length,
       focusMinutes: focusMinutes,
@@ -2572,6 +4222,11 @@ class AppState extends ChangeNotifier {
       focusTotal: _countTasksBySource(focusSources),
       autoTrackedSources: _autoTrackedSourceLabels(),
     );
+  }
+
+  void _syncTodaySummary() {
+    final today = _todayKey();
+    final summary = _buildTodayExperienceSummary();
 
     final index = _dailySummaries.indexWhere((item) => item.date == today);
 
@@ -2582,6 +4237,61 @@ class AppState extends ChangeNotifier {
     }
 
     _saveDailySummaries();
+    _syncAvatarExperienceLedgerForSummary(summary);
+  }
+
+  void _syncAvatarExperienceLedgerForSummary(DailySummary summary) {
+    final expectedExperience = avatarExperienceForSummary(summary);
+    final seriesExperience = Map<String, int>.from(
+      _avatarExperienceLedger[summary.date] ?? const <String, int>{},
+    );
+    final recordedExperience = seriesExperience.values.fold<int>(
+      0,
+      (acc, value) => acc + value,
+    );
+    final delta = expectedExperience - recordedExperience;
+    if (delta == 0) return;
+
+    if (delta > 0) {
+      final series = currentAvatarSeries;
+      seriesExperience[series] = (seriesExperience[series] ?? 0) + delta;
+    } else {
+      _removeAvatarExperienceFromLedgerEntry(
+        seriesExperience,
+        amount: -delta,
+        preferredSeries: currentAvatarSeries,
+      );
+    }
+
+    seriesExperience.removeWhere((_, experience) => experience <= 0);
+    if (seriesExperience.isEmpty) {
+      _avatarExperienceLedger.remove(summary.date);
+    } else {
+      _avatarExperienceLedger[summary.date] = seriesExperience;
+    }
+    _saveAvatarExperienceLedger();
+  }
+
+  void _removeAvatarExperienceFromLedgerEntry(
+    Map<String, int> seriesExperience, {
+    required int amount,
+    required String preferredSeries,
+  }) {
+    var remaining = amount;
+
+    void consume(String series) {
+      if (remaining <= 0) return;
+      final available = seriesExperience[series] ?? 0;
+      if (available <= 0) return;
+      final used = math.min(available, remaining);
+      seriesExperience[series] = available - used;
+      remaining -= used;
+    }
+
+    consume(preferredSeries);
+    for (final series in seriesExperience.keys.toList()) {
+      consume(series);
+    }
   }
 
   Future<void> setThemeModeSetting(String value) async {
@@ -2597,6 +4307,8 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> setBackgroundThemeSetting(String value) async {
+    final index = AppUI.backgroundThemeKeys.indexOf(value);
+    if (index < 0 || !isAvatarItemUnlocked('appBackground', index)) return;
     _backgroundThemeSetting = value;
     notifyListeners();
     await _saveAppearanceSettings();
@@ -2634,62 +4346,142 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     await _saveAppearanceSettings();
     await _saveCurrentUser();
+    await syncDataToFirestore();
   }
 
-  Future<void> signInWithEmail({
-    required String email,
-    required String password,
-  }) async {
-    final normalizedEmail = email.trim();
-    if (normalizedEmail.isEmpty || !normalizedEmail.contains('@')) {
-      throw ArgumentError('請輸入有效的 Email');
+  Future<void> signInWithEmailAndPassword(String email, String password) async {
+    final credential = await fb_auth.FirebaseAuth.instance
+        .signInWithEmailAndPassword(
+          email: email.trim(),
+          password: password.trim(),
+        );
+    if (credential.user != null) {
+      await _syncProfileFromFirebaseUser(credential.user!);
     }
-    if (password.trim().length < 6) {
-      throw ArgumentError('密碼至少需要 6 個字元');
-    }
+  }
 
-    await _signInWithProvider(authProvider: 'email', email: normalizedEmail);
+  Future<void> signUpWithEmailAndPassword(
+    String email,
+    String password,
+    String nickname,
+  ) async {
+    final credential = await fb_auth.FirebaseAuth.instance
+        .createUserWithEmailAndPassword(
+          email: email.trim(),
+          password: password.trim(),
+        );
+    if (credential.user != null) {
+      try {
+        await credential.user!.sendEmailVerification();
+        debugPrint('Verification email sent to ${email.trim()}');
+      } catch (e) {
+        debugPrint('Could not send email verification: $e');
+      }
+      _profileNickname = nickname.trim();
+      await _syncProfileFromFirebaseUser(credential.user!);
+    }
   }
 
   Future<void> signInWithGoogle() async {
-    await _signInWithProvider(authProvider: 'google');
+    try {
+      // google_sign_in v7: singleton instance with initialize() + authenticate()
+      await GoogleSignIn.instance.initialize();
+      final googleUser = await GoogleSignIn.instance.authenticate();
+      final googleAuth = googleUser.authentication;
+
+      final credential = fb_auth.GoogleAuthProvider.credential(
+        idToken: googleAuth.idToken,
+        // accessToken is no longer in authentication getter in v7
+      );
+      final userCredential = await fb_auth.FirebaseAuth.instance
+          .signInWithCredential(credential);
+      if (userCredential.user != null) {
+        await _syncProfileFromFirebaseUser(userCredential.user!);
+      }
+    } catch (e) {
+      debugPrint('Google Sign-in error: $e');
+      rethrow;
+    }
   }
 
   Future<void> signInWithApple() async {
-    await _signInWithProvider(authProvider: 'apple');
+    try {
+      final appleCredential = await SignInWithApple.getAppleIDCredential(
+        scopes: [
+          AppleIDAuthorizationScopes.email,
+          AppleIDAuthorizationScopes.fullName,
+        ],
+      );
+
+      final oAuthProvider = fb_auth.OAuthProvider('apple.com');
+      final credential = oAuthProvider.credential(
+        idToken: appleCredential.identityToken,
+        accessToken: appleCredential.authorizationCode,
+      );
+      final userCredential = await fb_auth.FirebaseAuth.instance
+          .signInWithCredential(credential);
+
+      // Apple only provides name on first sign-in
+      final displayName =
+          '${appleCredential.givenName ?? ''} ${appleCredential.familyName ?? ''}'
+              .trim();
+      if (displayName.isNotEmpty) {
+        _profileNickname = displayName;
+      }
+
+      if (userCredential.user != null) {
+        await _syncProfileFromFirebaseUser(userCredential.user!);
+      }
+    } catch (e) {
+      debugPrint('Apple Sign-in error: $e');
+      rethrow;
+    }
   }
 
-  Future<void> _signInWithProvider({
-    required String authProvider,
-    String? email,
-  }) async {
-    final now = DateTime.now();
-    final existing = _currentUser;
-    _currentUser = UserModel(
-      id: existing?.id.isNotEmpty == true ? existing!.id : _myNudgeId,
-      email: email ?? existing?.email,
-      username: existing?.username.isNotEmpty == true
-          ? existing!.username
-          : _myNudgeId,
-      nickname: _profileNickname,
-      signature: _profileSignature,
-      authProvider: authProvider,
-      avatarProfileId: 'local_avatar',
-      themeMode: _themeModeSetting,
-      accentColor: _iconColorSetting,
-      timezone: DateTime.now().timeZoneName,
-      isActive: true,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-      lastLoginAt: now,
-    );
+  Future<void> signInWithFacebook() async {
+    try {
+      final LoginResult result = await FacebookAuth.instance.login(
+        permissions: ['email', 'public_profile'],
+      );
+      if (result.status != LoginStatus.success) {
+        throw Exception('Facebook 登入被取消或失敗：${result.message}');
+      }
+      final fb_auth.OAuthCredential credential = fb_auth
+          .FacebookAuthProvider.credential(result.accessToken!.tokenString);
+      final userCredential = await fb_auth.FirebaseAuth.instance
+          .signInWithCredential(credential);
+      if (userCredential.user != null) {
+        await _syncProfileFromFirebaseUser(userCredential.user!);
+      }
+    } catch (e) {
+      debugPrint('Facebook Sign-in error: $e');
+      rethrow;
+    }
+  }
 
-    notifyListeners();
-    await _saveCurrentUser();
+  Future<void> signInWithMicrosoft() async {
+    try {
+      final provider = fb_auth.OAuthProvider('microsoft.com')
+        ..setCustomParameters({'prompt': 'select_account'});
+      final userCredential = await fb_auth.FirebaseAuth.instance
+          .signInWithProvider(provider);
+      if (userCredential.user != null) {
+        await _syncProfileFromFirebaseUser(userCredential.user!);
+      }
+    } catch (e) {
+      debugPrint('Microsoft Sign-in error: $e');
+      rethrow;
+    }
   }
 
   Future<void> signOut() async {
+    try {
+      await fb_auth.FirebaseAuth.instance.signOut();
+    } catch (e) {
+      debugPrint('Error signing out of Firebase: $e');
+    }
     _currentUser = null;
+    _isGuestMode = false;
     notifyListeners();
     await _saveCurrentUser();
   }
@@ -2701,6 +4493,16 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     await _saveAppearanceSettings();
     await _saveStudyRooms();
+    await syncDataToFirestore();
+  }
+
+  Future<void> updateAvatarIconIndex(int index) async {
+    if (!isAvatarIconUnlocked(index)) return;
+    _avatarProfile = _avatarProfile.copyWith(avatarIconIndex: index);
+    _normalizeAvatarProfileForCatalog();
+    notifyListeners();
+    await _saveAppearanceSettings();
+    await syncDataToFirestore();
   }
 
   SocialFriendProfile? getSocialFriendById(String id) {
@@ -2709,6 +4511,48 @@ class AppState extends ChangeNotifier {
     } catch (_) {
       return null;
     }
+  }
+
+  Future<SocialFriendProfile?> searchFriendByNudgeId(String rawId) async {
+    final queryId = rawId.trim().toUpperCase();
+    if (queryId.isEmpty || queryId == _myNudgeId) return null;
+
+    try {
+      final querySnap = await FirebaseFirestore.instance
+          .collection('users')
+          .where('username', isEqualTo: queryId)
+          .limit(1)
+          .get();
+
+      if (querySnap.docs.isNotEmpty) {
+        final data = querySnap.docs.first.data();
+        final userModel = UserModel.fromJson(data);
+
+        AvatarProfile? avatarProfile;
+        if (data['avatarProfile'] != null) {
+          avatarProfile = AvatarProfile.fromJson(
+            Map<String, dynamic>.from(data['avatarProfile'] as Map),
+          );
+        }
+
+        return SocialFriendProfile(
+          id: userModel.id,
+          nudgeId: userModel.username,
+          name: userModel.nickname,
+          signature: userModel.signature,
+          todayFocusSeconds: (data['focusSeconds'] as num?)?.toInt() ?? 0,
+          isStudying: data['isStudying'] as bool? ?? false,
+          avatarColor: const Color(0xFF7C6AE6),
+          avatarProfile: avatarProfile,
+          isFollowing: false,
+          encouragementCount: 0,
+        );
+      }
+    } catch (e) {
+      debugPrint('Failed to query user by Nudge ID: $e');
+    }
+
+    return findFriendCandidateByNudgeId(queryId);
   }
 
   SocialFriendProfile? findFriendCandidateByNudgeId(String rawId) {
@@ -2753,6 +4597,64 @@ class AppState extends ChangeNotifier {
     return match.isEmpty ? null : match.first;
   }
 
+  Future<SocialFriendProfile?> searchFriendFromInvite(String rawValue) async {
+    final value = rawValue.trim();
+    if (value.isEmpty) return null;
+
+    final directCandidate = await searchFriendByNudgeId(value);
+    if (directCandidate != null) return directCandidate;
+
+    final uri = Uri.tryParse(value);
+    if (uri == null) return null;
+
+    final nudgeId = (uri.queryParameters['nudgeId'] ?? '').trim().toUpperCase();
+    if (nudgeId.isEmpty || nudgeId == _myNudgeId) return null;
+
+    return searchFriendByNudgeId(nudgeId);
+  }
+
+  SocialFriendProfile? findFriendCandidateFromInvite(String rawValue) {
+    final value = rawValue.trim();
+    if (value.isEmpty) return null;
+
+    final directCandidate = findFriendCandidateByNudgeId(value);
+    if (directCandidate != null) return directCandidate;
+
+    final uri = Uri.tryParse(value);
+    if (uri == null) return null;
+
+    final isNudgeInvite =
+        uri.scheme == 'nudge' && uri.host == 'friend' && uri.path == '/add';
+    final isWebInvite =
+        (uri.scheme == 'https' || uri.scheme == 'http') &&
+        uri.pathSegments.length >= 2 &&
+        uri.pathSegments[0] == 'friend' &&
+        uri.pathSegments[1] == 'add';
+    if (!isNudgeInvite && !isWebInvite) return null;
+
+    final nudgeId = (uri.queryParameters['nudgeId'] ?? '').trim().toUpperCase();
+    if (nudgeId.isEmpty || nudgeId == _myNudgeId) return null;
+
+    final knownCandidate = findFriendCandidateByNudgeId(nudgeId);
+    if (knownCandidate != null) return knownCandidate;
+
+    final name = (uri.queryParameters['name'] ?? '').trim();
+    final signature = (uri.queryParameters['signature'] ?? '').trim();
+
+    return SocialFriendProfile(
+      id: 'candidate_${nudgeId.toLowerCase().replaceAll('-', '_')}',
+      nudgeId: nudgeId,
+      name: name.isEmpty ? 'Nudge 好友' : name,
+      signature: signature.isEmpty ? '想和你一起自律前進' : signature,
+      todayFocusSeconds: 0,
+      isStudying: false,
+      avatarColor: const Color(0xFF4F8CFF),
+      avatarProfile: avatarVariantForSeed(nudgeId.hashCode),
+      isFollowing: false,
+      encouragementCount: 0,
+    );
+  }
+
   Future<void> addSocialFriend({
     String? id,
     String? nudgeId,
@@ -2795,61 +4697,98 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> sendFriendRequest(SocialFriendProfile candidate) async {
-    final exists = _friendRequests.any(
-      (request) =>
-          request.nudgeId.toUpperCase() == candidate.nudgeId.toUpperCase() &&
-          request.status == FriendRequestStatus.pending,
-    );
-    if (exists) return;
+    final user = _currentUser;
+    if (user == null) return;
 
-    _friendRequests = [
-      FriendRequest(
-        id: 'req_out_${DateTime.now().microsecondsSinceEpoch}',
-        nudgeId: candidate.nudgeId,
-        name: candidate.name,
-        signature: candidate.signature,
-        direction: FriendRequestDirection.outgoing,
-        status: FriendRequestStatus.pending,
-        createdAt: DateTime.now(),
-      ),
-      ..._friendRequests,
-    ];
+    final reqId = 'req_${user.id}_${candidate.id}';
+    final docRef = FirebaseFirestore.instance
+        .collection('friend_requests')
+        .doc(reqId);
 
-    notifyListeners();
-    await _saveFriendIdentityAndRequests();
+    await docRef.set({
+      'senderId': user.id,
+      'senderNudgeId': user.username,
+      'senderName': user.nickname,
+      'senderSignature': user.signature,
+      'receiverId': candidate.id,
+      'receiverNudgeId': candidate.nudgeId,
+      'receiverName': candidate.name,
+      'receiverSignature': candidate.signature,
+      'status': 'pending',
+      'createdAt': FieldValue.serverTimestamp(),
+    });
   }
 
   Future<void> acceptFriendRequest(String requestId) async {
-    final request = _friendRequests.where((item) => item.id == requestId);
-    if (request.isEmpty) return;
-    final target = request.first;
+    final user = _currentUser;
+    if (user == null) return;
 
-    await addSocialFriend(
-      id: 'friend_${target.nudgeId.toLowerCase().replaceAll('-', '_')}',
-      nudgeId: target.nudgeId,
-      name: target.name,
-      signature: target.signature,
-      avatarColor: const Color(0xFF4F8CFF),
-      avatarProfile: avatarVariantForSeed(target.nudgeId.hashCode),
-    );
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('friend_requests')
+          .doc(requestId);
+      final docSnap = await docRef.get();
+      if (docSnap.exists) {
+        final data = docSnap.data()!;
+        final senderId = data['senderId'] as String? ?? '';
+        final senderNudgeId = data['senderNudgeId'] as String? ?? '';
+        final senderName = data['senderName'] as String? ?? '';
+        final senderSignature = data['senderSignature'] as String? ?? '';
 
-    _friendRequests = _friendRequests.map((item) {
-      if (item.id != requestId) return item;
-      return item.copyWith(status: FriendRequestStatus.accepted);
-    }).toList();
+        await docRef.update({'status': 'accepted'});
 
-    notifyListeners();
-    await _saveFriendIdentityAndRequests();
+        final myFriendProfile = SocialFriendProfile(
+          id: senderId,
+          nudgeId: senderNudgeId,
+          name: senderName,
+          signature: senderSignature,
+          todayFocusSeconds: 0,
+          isStudying: false,
+          avatarColor: const Color(0xFF7C6AE6),
+          isFollowing: true,
+          encouragementCount: 0,
+        );
+
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.id)
+            .collection('friends')
+            .doc(senderId)
+            .set(myFriendProfile.toJson());
+
+        final otherFriendProfile = SocialFriendProfile(
+          id: user.id,
+          nudgeId: user.username,
+          name: user.nickname,
+          signature: user.signature,
+          todayFocusSeconds: 0,
+          isStudying: false,
+          avatarColor: const Color(0xFF7C6AE6),
+          isFollowing: true,
+          encouragementCount: 0,
+        );
+
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(senderId)
+            .collection('friends')
+            .doc(user.id)
+            .set(otherFriendProfile.toJson());
+      }
+    } catch (e) {
+      debugPrint('Failed to accept friend request: $e');
+    }
   }
 
   Future<void> declineFriendRequest(String requestId) async {
-    _friendRequests = _friendRequests.map((item) {
-      if (item.id != requestId) return item;
-      return item.copyWith(status: FriendRequestStatus.declined);
-    }).toList();
-
-    notifyListeners();
-    await _saveFriendIdentityAndRequests();
+    try {
+      await FirebaseFirestore.instance
+          .collection('friend_requests')
+          .doc(requestId)
+          .update({'status': 'declined'});
+    } catch (e) {
+      debugPrint('Failed to decline friend request: $e');
+    }
   }
 
   Future<void> removeSocialFriend(String id) async {
@@ -2861,6 +4800,26 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     await _saveSocialFriends();
     await _saveSocialEncouragementRecords();
+
+    final user = _currentUser;
+    if (user != null) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.id)
+            .collection('friends')
+            .doc(id)
+            .delete();
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(id)
+            .collection('friends')
+            .doc(user.id)
+            .delete();
+      } catch (e) {
+        debugPrint('Failed to delete friend from Firestore: $e');
+      }
+    }
   }
 
   Future<void> toggleFollowFriend(String id) async {
@@ -2968,6 +4927,7 @@ class AppState extends ChangeNotifier {
   }
 
   void toggleTask(int index, bool value) {
+    _checkDailyResetSync();
     if (index < 0 || index >= _tasks.length) return;
     final task = _tasks[index];
     final isDeadlineTask = task['taskType'] == 'deadline';
@@ -2978,6 +4938,7 @@ class AppState extends ChangeNotifier {
     }
 
     _tasks[index]['done'] = value;
+    _tasks[index]['isDone'] = value;
     _tasks[index]['updatedAt'] = DateTime.now().toIso8601String();
     _tasks[index]['completedAt'] = value
         ? DateTime.now().toIso8601String()
@@ -2987,6 +4948,7 @@ class AppState extends ChangeNotifier {
     }
     _syncTaskRewards();
     _syncTodaySummary();
+    checkWeeklyPlanetSettlement();
     notifyListeners();
     _saveTasks();
   }
@@ -3002,6 +4964,7 @@ class AppState extends ChangeNotifier {
     double? targetValue,
     String? unitLabel,
   }) {
+    final now = DateTime.now().toIso8601String();
     if (taskType == 'deadline') {
       final parsedDueDate = DateTime.tryParse(dueDate ?? '');
       if (parsedDueDate != null &&
@@ -3015,6 +4978,7 @@ class AppState extends ChangeNotifier {
       'userId': 'local_user',
       'title': title,
       'done': false,
+      'isDone': false,
       'category': category,
       'taskType': taskType,
       'dueDate': taskType == 'fixed' ? null : dueDate,
@@ -3024,9 +4988,11 @@ class AppState extends ChangeNotifier {
       'sourceType': sourceType?.name,
       'targetValue': targetValue,
       'unitLabel': unitLabel,
+      if (isAutoTracked && sourceType == TaskSourceType.focusMinutes)
+        'trackingStartFocusSeconds': _focusSeconds,
       'sourceId': null,
-      'createdAt': DateTime.now().toIso8601String(),
-      'updatedAt': DateTime.now().toIso8601String(),
+      'createdAt': now,
+      'updatedAt': now,
       'completedAt': null,
     });
     _syncAutoTrackedTasks();
@@ -3034,6 +5000,48 @@ class AppState extends ChangeNotifier {
     _syncTodaySummary();
     notifyListeners();
     _saveTasks();
+  }
+
+  void setHealthTrackingTask({
+    required TaskSourceType sourceType,
+    required String title,
+    required String category,
+    required double targetValue,
+    required String unitLabel,
+  }) {
+    final index = _tasks.indexWhere((task) {
+      final isAutoTracked = task['isAutoTracked'] as bool? ?? false;
+      final isSystemTask = task['isSystemTask'] as bool? ?? false;
+      return isAutoTracked &&
+          !isSystemTask &&
+          _readTaskSourceType(task) == sourceType;
+    });
+
+    if (index == -1) {
+      addTask(
+        title,
+        category,
+        taskType: 'fixed',
+        priority: '中',
+        isAutoTracked: true,
+        sourceType: sourceType,
+        targetValue: targetValue,
+        unitLabel: unitLabel,
+      );
+      return;
+    }
+
+    updateTask(
+      index: index,
+      title: title,
+      category: category,
+      taskType: 'fixed',
+      priority: '中',
+      isAutoTracked: true,
+      sourceType: sourceType,
+      targetValue: targetValue,
+      unitLabel: unitLabel,
+    );
   }
 
   void deleteTask(int index) {
@@ -3078,22 +5086,32 @@ class AppState extends ChangeNotifier {
       }
     }
 
-    final oldDone = _tasks[index]['done'] as bool? ?? false;
+    final nextIsAutoTracked =
+        isAutoTracked ?? (_tasks[index]['isAutoTracked'] as bool? ?? false);
+    final nextSourceType = sourceType ?? _readTaskSourceType(_tasks[index]);
+    final isFocusAutoTask =
+        nextIsAutoTracked && nextSourceType == TaskSourceType.focusMinutes;
+    final oldDone = isFocusAutoTask
+        ? false
+        : (_tasks[index]['done'] as bool? ?? false);
+    final now = DateTime.now().toIso8601String();
 
     _tasks[index] = {
       ..._tasks[index],
       'title': title,
       'done': oldDone,
+      'isDone': oldDone,
       'category': category,
       'taskType': taskType,
       'dueDate': taskType == 'fixed' ? null : dueDate,
       'priority': priority,
-      'isAutoTracked':
-          isAutoTracked ?? (_tasks[index]['isAutoTracked'] ?? false),
-      'sourceType': sourceType?.name ?? _tasks[index]['sourceType'],
+      'isAutoTracked': nextIsAutoTracked,
+      'sourceType': nextSourceType?.name ?? _tasks[index]['sourceType'],
       'targetValue': targetValue ?? _tasks[index]['targetValue'],
       'unitLabel': unitLabel ?? _tasks[index]['unitLabel'],
-      'updatedAt': DateTime.now().toIso8601String(),
+      if (isFocusAutoTask) 'trackingStartFocusSeconds': _focusSeconds,
+      'updatedAt': now,
+      'completedAt': oldDone ? (_tasks[index]['completedAt'] ?? now) : null,
     };
 
     _syncAutoTrackedTasks();
@@ -3109,6 +5127,7 @@ class AppState extends ChangeNotifier {
 
   void addFocusSeconds(int seconds) {
     if (seconds <= 0) return;
+    _checkDailyResetSync();
     _focusSeconds += seconds;
     _syncMyFocusSecondsAcrossRooms();
     _syncStudyGoalTaskCompletion();
@@ -3127,6 +5146,23 @@ class AppState extends ChangeNotifier {
     required int steps,
     required int exerciseMinutes,
   }) {
+    _checkDailyResetSync();
+    final now = DateTime.now();
+    if (_lastHealthSyncTime != null && steps > _lastStepsCount) {
+      final deltaSteps = steps - _lastStepsCount;
+      final deltaTime = now.difference(_lastHealthSyncTime!);
+      if (!validateActivityLegitimacy(
+        'steps',
+        deltaSteps.toDouble(),
+        deltaTime,
+      )) {
+        debugPrint('Steps synchronization rejected due to velocity check.');
+        return;
+      }
+    }
+    _lastHealthSyncTime = now;
+    _lastStepsCount = steps;
+
     _isHealthConnected = isConnected;
     _sleepHours = sleepHours;
     _steps = steps;
@@ -3173,6 +5209,7 @@ class AppState extends ChangeNotifier {
     _dailyCoinEarned = <String, int>{};
     _monthlyDeadlineCoinEarned = <String, int>{};
     _unlockedAvatarItemKeys = <String>{};
+    _avatarExperienceLedger = <String, Map<String, int>>{};
 
     _themeModeSetting = 'system';
     _iconColorSetting = 'purple';
@@ -3189,6 +5226,7 @@ class AppState extends ChangeNotifier {
     _currentUser = null;
     _hasAcceptedPrivacyPolicy = false;
     _privacyAcceptedAt = null;
+    _hasCompletedOnboarding = false;
     _seenUnlockedBadgeKeys = <String>{};
     _unlockedBadgeDates = <String, String>{};
     _socialEncouragementRecords = [];
@@ -3205,12 +5243,14 @@ class AppState extends ChangeNotifier {
     await _saveDailySummaries();
     await _saveRewardState();
     await _saveAvatarUnlockState();
+    await _saveAvatarExperienceLedger();
     await _saveAppearanceSettings();
     await _saveStudyRooms();
     await _saveSocialFriends();
     await _saveFriendIdentityAndRequests();
     await _saveCurrentUser();
     await _savePrivacyConsent();
+    await prefs.setBool(_onboardingCompletedKey, false);
     await _saveSocialEncouragementRecords();
     await _saveUnlockedBadges();
     await _saveSeenUnlockedBadges();
@@ -3241,7 +5281,7 @@ class AppState extends ChangeNotifier {
           );
           final coinsEarned = AppState.scoreCoinMilestones.entries
               .where((entry) => score >= entry.key)
-              .fold<int>(0, (sum, entry) => sum + entry.value)
+              .fold<int>(0, (acc, entry) => acc + entry.value)
               .clamp(0, AppState.coinDailyLimit)
               .toInt();
           final healthCompleted =
@@ -3276,27 +5316,34 @@ class AppState extends ChangeNotifier {
     ];
 
     _dailySummaries = mock;
+    _avatarExperienceLedger = <String, Map<String, int>>{};
+    _migrateLegacyAvatarExperienceLedger();
     notifyListeners();
     await _saveDailySummaries();
+    await _saveAvatarExperienceLedger();
   }
 
   Future<void> clearDailySummaries() async {
     _dailySummaries = [];
+    _avatarExperienceLedger = <String, Map<String, int>>{};
     _syncTodaySummary();
     notifyListeners();
     await _saveDailySummaries();
+    await _saveAvatarExperienceLedger();
   }
 
   void _syncMyFocusSecondsAcrossRooms() {
     _studyRooms = _studyRooms.map((room) {
       final members = List<StudyMemberData>.from(room.members);
-      final meIndex = members.indexWhere((m) => m.memberId == 'local_user');
+      final meIndex = members.indexWhere(
+        (m) => m.memberId == _myId || m.memberId == 'local_user',
+      );
 
       if (meIndex == -1) {
         members.insert(
           0,
           StudyMemberData(
-            memberId: 'local_user',
+            memberId: _myId,
             name: _profileNickname,
             roomNickname: _profileNickname,
             status: StudyMemberStatus.offline,
@@ -3344,7 +5391,7 @@ class AppState extends ChangeNotifier {
 
     final total = approvedMembers.fold<int>(
       0,
-      (sum, member) => sum + member.todayFocusSeconds,
+      (acc, member) => acc + member.todayFocusSeconds,
     );
 
     final sorted = [...approvedMembers]
@@ -3405,6 +5452,29 @@ class AppState extends ChangeNotifier {
     _saveStudyRooms();
   }
 
+  void updateRoomRules({
+    required String roomId,
+    required String rules,
+    required bool nicknameRuleEnabled,
+    required String nicknameRuleText,
+    required bool joinQuestionsEnabled,
+    required List<String> joinQuestions,
+  }) {
+    _studyRooms = _studyRooms.map((room) {
+      if (room.id != roomId) return room;
+      return room.copyWith(
+        roomRules: rules,
+        nicknameRuleEnabled: nicknameRuleEnabled,
+        nicknameRuleText: nicknameRuleText,
+        joinQuestionsEnabled: joinQuestionsEnabled,
+        joinQuestions: joinQuestions,
+      );
+    }).toList();
+
+    notifyListeners();
+    _saveStudyRooms();
+  }
+
   void removeMemberFromRoom({
     required String roomId,
     required String memberName,
@@ -3438,7 +5508,10 @@ class AppState extends ChangeNotifier {
     StudyMemberData? approvedMember;
 
     _studyRooms = _studyRooms.map((room) {
-      if (room.id != roomId || room.ownerId != 'local_user') return room;
+      if (room.id != roomId ||
+          (room.ownerId != _myId && room.ownerId != 'local_user')) {
+        return room;
+      }
       final approvedCount = room.members
           .where((member) => member.isApproved)
           .length;
@@ -3457,7 +5530,7 @@ class AppState extends ChangeNotifier {
         events: [
           StudyRoomEvent(
             id: 'event_${now.microsecondsSinceEpoch}',
-            actorId: 'local_user',
+            actorId: _myId,
             actorName: _profileNickname,
             text:
                 '${approvedMember!.roomNickname.isEmpty ? approvedMember!.name : approvedMember!.roomNickname} 的加入申請已通過',
@@ -3488,7 +5561,10 @@ class AppState extends ChangeNotifier {
     StudyMemberData? rejectedMember;
 
     _studyRooms = _studyRooms.map((room) {
-      if (room.id != roomId || room.ownerId != 'local_user') return room;
+      if (room.id != roomId ||
+          (room.ownerId != _myId && room.ownerId != 'local_user')) {
+        return room;
+      }
 
       for (final member in room.members) {
         if (member.memberId == memberId && !member.isApproved) {
@@ -3508,7 +5584,7 @@ class AppState extends ChangeNotifier {
         events: [
           StudyRoomEvent(
             id: 'event_${now.microsecondsSinceEpoch}',
-            actorId: 'local_user',
+            actorId: _myId,
             actorName: _profileNickname,
             text:
                 '${rejectedMember!.roomNickname.isEmpty ? rejectedMember!.name : rejectedMember!.roomNickname} 的加入申請已拒絕',
@@ -3595,13 +5671,19 @@ class AppState extends ChangeNotifier {
     if (room == null) return;
 
     final remainingMembers = room.members
-        .where((member) => member.memberId != 'local_user' && member.isApproved)
+        .where(
+          (member) =>
+              member.memberId != _myId &&
+              member.memberId != 'local_user' &&
+              member.isApproved,
+        )
         .toList();
 
-    if (room.ownerId == 'local_user' && remainingMembers.isEmpty) {
+    if ((room.ownerId == _myId || room.ownerId == 'local_user') &&
+        remainingMembers.isEmpty) {
       _studyRooms = _studyRooms.where((item) => item.id != roomId).toList();
     } else {
-      final nextOwner = room.ownerId == 'local_user'
+      final nextOwner = (room.ownerId == _myId || room.ownerId == 'local_user')
           ? remainingMembers.first
           : null;
 
@@ -3627,7 +5709,7 @@ class AppState extends ChangeNotifier {
           events: [
             StudyRoomEvent(
               id: 'event_${now.microsecondsSinceEpoch}',
-              actorId: 'local_user',
+              actorId: _myId,
               actorName: _profileNickname,
               text: '$_profileNickname 退出了房間',
               type: StudyRoomEventType.leave,
@@ -3648,7 +5730,7 @@ class AppState extends ChangeNotifier {
     _saveTasks();
   }
 
-  void createStudyRoom({
+  Future<void> createStudyRoom({
     required String name,
     required String description,
     required Color accentColor,
@@ -3672,9 +5754,10 @@ class AppState extends ChangeNotifier {
     String challengeTitle = '今日房間挑戰',
     String challengeDescription = '一起累積自律進度',
     String challengeDeadlineLabel = '今天 23:59',
-  }) {
-    final safeOwnerId = (ownerId == null || ownerId.trim().isEmpty)
-        ? 'local_user'
+  }) async {
+    // Use Firebase uid as ownerId when signed in
+    final resolvedOwnerId = (ownerId == null || ownerId.trim().isEmpty)
+        ? _myId
         : ownerId.trim();
     final safeOwnerName = (ownerName == null || ownerName.trim().isEmpty)
         ? _profileNickname
@@ -3692,7 +5775,7 @@ class AppState extends ChangeNotifier {
       name: name,
       description: description.isEmpty ? '新的自律房' : description,
       accentColor: accentColor,
-      ownerId: safeOwnerId,
+      ownerId: resolvedOwnerId,
       ownerName: safeOwnerName,
       announcement: '',
       tags: tags ?? const [],
@@ -3718,7 +5801,7 @@ class AppState extends ChangeNotifier {
       syncTaskEnabled: true,
       members: [
         StudyMemberData(
-          memberId: 'local_user',
+          memberId: _myId,
           name: _profileNickname,
           roomNickname: _profileNickname,
           status: StudyMemberStatus.offline,
@@ -3737,7 +5820,7 @@ class AppState extends ChangeNotifier {
       events: [
         StudyRoomEvent(
           id: 'event_${now.microsecondsSinceEpoch}',
-          actorId: safeOwnerId,
+          actorId: resolvedOwnerId,
           actorName: safeOwnerName,
           text: '$safeOwnerName 建立了這間自律房',
           type: StudyRoomEventType.system,
@@ -3752,8 +5835,8 @@ class AppState extends ChangeNotifier {
     _syncAutoTrackedTasks();
     _syncTaskRewards();
     notifyListeners();
-    _saveStudyRooms();
-    _saveTasks();
+    await _saveStudyRooms();
+    await _saveTasks();
   }
 
   void inviteMemberToRoom({
@@ -3813,7 +5896,7 @@ class AppState extends ChangeNotifier {
   }) {
     final now = DateTime.now();
     final localMember = StudyMemberData(
-      memberId: 'local_user',
+      memberId: _myId,
       name: _profileNickname,
       roomNickname: _profileNickname,
       status: StudyMemberStatus.offline,
@@ -3834,7 +5917,7 @@ class AppState extends ChangeNotifier {
       if (existingRoom.id != room.id) return existingRoom;
 
       if (existingRoom.members.any(
-        (member) => member.memberId == 'local_user',
+        (member) => member.memberId == _myId || member.memberId == 'local_user',
       )) {
         return existingRoom;
       }
@@ -3851,7 +5934,7 @@ class AppState extends ChangeNotifier {
         events: [
           StudyRoomEvent(
             id: 'event_${now.microsecondsSinceEpoch}',
-            actorId: 'local_user',
+            actorId: _myId,
             actorName: _profileNickname,
             text: isApproved
                 ? '$_profileNickname 加入了房間'
@@ -3873,7 +5956,7 @@ class AppState extends ChangeNotifier {
           events: [
             StudyRoomEvent(
               id: 'event_${now.microsecondsSinceEpoch}',
-              actorId: 'local_user',
+              actorId: _myId,
               actorName: _profileNickname,
               text: isApproved
                   ? '$_profileNickname 加入了房間'
@@ -3907,7 +5990,9 @@ class AppState extends ChangeNotifier {
   }) {
     _studyRooms = _studyRooms.map((room) {
       final members = List<StudyMemberData>.from(room.members);
-      final meIndex = members.indexWhere((m) => m.memberId == 'local_user');
+      final meIndex = members.indexWhere(
+        (m) => m.memberId == _myId || m.memberId == 'local_user',
+      );
       if (room.id == roomId && meIndex != -1 && !members[meIndex].isApproved) {
         return room;
       }
@@ -3916,7 +6001,7 @@ class AppState extends ChangeNotifier {
         members.insert(
           0,
           StudyMemberData(
-            memberId: 'local_user',
+            memberId: _myId,
             name: _profileNickname,
             roomNickname: _profileNickname,
             status: room.id == roomId ? status : StudyMemberStatus.offline,
@@ -3999,8 +6084,8 @@ class AppState extends ChangeNotifier {
 
       final total = room.members.fold<int>(
         0,
-        (sum, member) =>
-            sum + (member.isApproved ? member.todayFocusSeconds : 0),
+        (acc, member) =>
+            acc + (member.isApproved ? member.todayFocusSeconds : 0),
       );
 
       final safeGoal = goalSeconds <= 0 ? 60 * 60 : goalSeconds;
@@ -4034,7 +6119,9 @@ class AppState extends ChangeNotifier {
       if (room.id != roomId) return room;
 
       final members = List<StudyMemberData>.from(room.members);
-      final meIndex = members.indexWhere((m) => m.memberId == 'local_user');
+      final meIndex = members.indexWhere(
+        (m) => m.memberId == _myId || m.memberId == 'local_user',
+      );
 
       if (meIndex != -1) {
         final current = members[meIndex];
@@ -4066,7 +6153,7 @@ class AppState extends ChangeNotifier {
 
     final total = room.members.fold<int>(
       0,
-      (sum, member) => sum + (member.isApproved ? member.todayFocusSeconds : 0),
+      (acc, member) => acc + (member.isApproved ? member.todayFocusSeconds : 0),
     );
 
     if (total <= 0) return 0;
@@ -4085,5 +6172,864 @@ class AppState extends ChangeNotifier {
     );
 
     return member.todayFocusSeconds / total;
+  }
+
+  Future<String> askAICoach() async {
+    final user = _currentUser;
+    if (user == null) {
+      return '請先登入以使用 AI 智能自律導師。';
+    }
+
+    try {
+      // Collect last 7 summaries
+      final recentSummaries = _dailySummaries.length > 7
+          ? _dailySummaries.sublist(_dailySummaries.length - 7)
+          : _dailySummaries;
+
+      final summaryBuf = StringBuffer();
+      for (final s in recentSummaries) {
+        summaryBuf.writeln(
+          '- 日期: ${s.date}, 分數: ${s.disciplineScore}/100, 步數: ${s.steps}, 睡眠: ${s.sleepHours}小時, 專注時間: ${s.focusMinutes}分鐘, 運動: ${s.exerciseMinutes}分鐘, 完成任務數: ${s.completedTasks}/${s.totalTasks}',
+        );
+      }
+
+      final prompt =
+          '''
+你是一位溫和且專業的「Nudge 自律導師」。請分析以下使用者過去 7 天的真實自律數據，尋找「行為盲點」與「數據關聯性」（例如：步數偏低是否影響了睡眠？專注時間和睡眠時間是否有負相關？任務完成率跟哪些因素有關？）。
+
+使用者過去 7 天的每日自律數據：
+${summaryBuf.toString()}
+
+請務必以繁體中文 (Traditional Chinese, zh-Hant) 回覆，並格式化為以下結構：
+### 📊 本週自律綜合分析
+[請在此寫入 2-3 句本週整體狀態評估]
+
+### 🔍 隱藏行為盲點剖析
+- **[盲點主題 1，例如：運動與專注的關係]**：[具體說明發現的關聯，例：「當你當天走路低於 3,000 步，晚上專注力通常會下滑 30%...」]
+- **[盲點主題 2，例如：睡眠對隔天任務完成率的影響]**：[說明數據關聯，例：「前一晚睡眠少於 6 小時，隔天的任務完成率會降低 25%...」]
+
+### 💡 下週微調行動建議 (Nudge)
+1. **[微行動 1]**：[具體且容易執行的精準建議]
+2. **[微行動 2]**：[具體且容易執行的精準建議]
+3. **[微行動 3]**：[具體且容易執行的精準建議]
+''';
+
+      final googleAI = FirebaseAI.googleAI(auth: fb_auth.FirebaseAuth.instance);
+      final model = googleAI.generativeModel(model: 'gemini-flash-latest');
+
+      final response = await model.generateContent([Content.text(prompt)]);
+      return response.text ?? 'AI 導師目前無回應，請稍後再試。';
+    } catch (e) {
+      debugPrint('Error calling Gemini: $e');
+      return 'AI 導師連線失敗，請確認你的網路，或請先執行 `npx firebase-tools init ailogic` 初始化 AI 服務！\n詳細錯誤：$e';
+    }
+  }
+
+  bool validateActivityLegitimacy(
+    String type,
+    double deltaValue,
+    Duration deltaTime,
+  ) {
+    if (deltaTime.inSeconds <= 0) {
+      return true; // prevent division by zero or errors
+    }
+
+    if (type == 'steps') {
+      final stepsPerSecond = deltaValue / deltaTime.inSeconds;
+      if (stepsPerSecond > 6.0) {
+        debugPrint(
+          'Security warning: Step count velocity of $stepsPerSecond steps/sec exceeds human limits.',
+        );
+        return false;
+      }
+    }
+
+    if (type == 'focus') {
+      final elapsedSeconds = deltaValue;
+      if (elapsedSeconds > deltaTime.inSeconds + 10) {
+        debugPrint(
+          'Security warning: Focus session elapsed seconds ($elapsedSeconds) exceeds actual elapsed time (${deltaTime.inSeconds} sec).',
+        );
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  bool addSecureFocusSeconds(
+    int seconds,
+    DateTime startTime,
+    DateTime endTime,
+  ) {
+    final realDuration = endTime.difference(startTime);
+    if (!validateActivityLegitimacy(
+      'focus',
+      seconds.toDouble(),
+      realDuration,
+    )) {
+      return false;
+    }
+    addFocusSeconds(seconds);
+    return true;
+  }
+
+  Future<void> joinVoiceRoom(String roomId) async {
+    final user = _currentUser;
+    if (user == null) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('rooms')
+          .doc(roomId)
+          .collection('calls')
+          .doc(user.id)
+          .set({
+            'memberId': user.id,
+            'name': _profileNickname,
+            'isVoiceActive': true,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+    } catch (e) {
+      debugPrint('Failed to join voice room: $e');
+    }
+  }
+
+  Future<void> leaveVoiceRoom(String roomId) async {
+    final user = _currentUser;
+    if (user == null) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('rooms')
+          .doc(roomId)
+          .collection('calls')
+          .doc(user.id)
+          .delete();
+    } catch (e) {
+      debugPrint('Failed to leave voice room: $e');
+    }
+  }
+
+  Future<void> sendVoiceSdp(
+    String roomId,
+    String targetMemberId,
+    String sdpType,
+    String sdpDescription,
+  ) async {
+    final user = _currentUser;
+    if (user == null) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('rooms')
+          .doc(roomId)
+          .collection('calls')
+          .doc(targetMemberId)
+          .collection('sdpExchange')
+          .doc(user.id)
+          .set({
+            'senderId': user.id,
+            'type': sdpType,
+            'sdp': sdpDescription,
+            'timestamp': FieldValue.serverTimestamp(),
+          });
+    } catch (e) {
+      debugPrint('Failed to send voice SDP: $e');
+    }
+  }
+
+  Future<void> sendVoiceIceCandidate(
+    String roomId,
+    String targetMemberId,
+    Map<String, dynamic> candidate,
+  ) async {
+    final user = _currentUser;
+    if (user == null) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('rooms')
+          .doc(roomId)
+          .collection('calls')
+          .doc(targetMemberId)
+          .collection('candidates')
+          .add({
+            'senderId': user.id,
+            'candidate': candidate,
+            'timestamp': FieldValue.serverTimestamp(),
+          });
+    } catch (e) {
+      debugPrint('Failed to send voice ICE Candidate: $e');
+    }
+  }
+
+  Future<void> acceptGuardianInvite() async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.id);
+      await docRef.update({
+        'webToolsState.guardianInviteStatus': {
+          'status': 'linked',
+          'updatedAt': DateTime.now().toIso8601String(),
+        },
+      });
+    } catch (e) {
+      debugPrint('Failed to accept guardian invite: $e');
+    }
+  }
+
+  /// 接受家長共同目標後，自動將目標名稱匯入為每日任務
+  Future<void> acceptParentGoalAsTask() async {
+    final invite = guardianInvite;
+    if (invite == null) return;
+    final goal = invite['goal']?.toString() ?? '';
+    if (goal.isEmpty) return;
+    await acceptGuardianInvite();
+    addTask('【家長陪伴目標】$goal', '學習', taskType: 'flexible', priority: '高');
+  }
+
+  /// 加入團體挑戰後，自動匯入每日挑戰任務
+  Future<void> joinGroupChallengeAsTask() async {
+    final challenge = groupChallenge;
+    if (challenge == null) return;
+    final group = challenge['group']?.toString() ?? '自律團體';
+    final type = challenge['type']?.toString() ?? '自律挑戰';
+    final days = (challenge['days'] as num?)?.toInt() ?? 7;
+    for (int d = 1; d <= days; d++) {
+      String title;
+      if (d == 1) {
+        title = '【$group】$type — 第$d天（啟動）';
+      } else if (d == days) {
+        title = '【$group】$type — 第$d天（完成衝刺）';
+      } else {
+        title = '【$group】$type — 第$d天';
+      }
+      addTask(title, '學習', taskType: 'flexible', priority: '中');
+    }
+  }
+
+  Future<void> declineGuardianInvite() async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.id);
+      await docRef.update({
+        'webToolsState.guardianInviteStatus': {
+          'status': 'declined',
+          'updatedAt': DateTime.now().toIso8601String(),
+        },
+      });
+    } catch (e) {
+      debugPrint('Failed to decline guardian invite: $e');
+    }
+  }
+
+  Future<void> removeGuardian() async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.id);
+      await docRef.update({
+        'webToolsState.guardianInvite': FieldValue.delete(),
+        'webToolsState.guardianInviteStatus': FieldValue.delete(),
+      });
+
+      // Clean up any pending/accepted requests in the collection
+      final reqs1 = await FirebaseFirestore.instance
+          .collection('guardian_requests')
+          .where('senderId', isEqualTo: user.id)
+          .get();
+      for (final doc in reqs1.docs) {
+        await doc.reference.delete();
+      }
+      final reqs2 = await FirebaseFirestore.instance
+          .collection('guardian_requests')
+          .where('receiverId', isEqualTo: user.id)
+          .get();
+      for (final doc in reqs2.docs) {
+        await doc.reference.delete();
+      }
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Failed to remove guardian: $e');
+    }
+  }
+
+  Future<void> saveTimeCapsule(
+    String title,
+    String date,
+    String message,
+  ) async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.id);
+      final newCapsule = {
+        'title': title,
+        'meta': '$date 解鎖',
+        'message': message,
+        'createdAt': DateTime.now().toIso8601String(),
+      };
+      final updatedCapsules = [newCapsule, ...timeCapsules];
+      await docRef.update({
+        'webToolsCollection.capsules': updatedCapsules,
+        'webToolsCollection.capsulesUpdatedAt': DateTime.now()
+            .toIso8601String(),
+      });
+    } catch (e) {
+      debugPrint('Failed to save time capsule: $e');
+    }
+  }
+
+  Future<void> deleteTimeCapsule(int index) async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.id);
+      final list = [...timeCapsules];
+      if (index >= 0 && index < list.length) {
+        list.removeAt(index);
+        await docRef.update({
+          'webToolsCollection.capsules': list,
+          'webToolsCollection.capsulesUpdatedAt': DateTime.now()
+              .toIso8601String(),
+        });
+      }
+    } catch (e) {
+      debugPrint('Failed to delete time capsule: $e');
+    }
+  }
+
+  Future<void> saveFutureLetter(
+    String state,
+    String action,
+    String note,
+  ) async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.id);
+      await docRef.update({
+        'webToolsState.futureLetter': {
+          'state': state,
+          'action': action,
+          'note': note,
+          'updatedAt': DateTime.now().toIso8601String(),
+        },
+      });
+    } catch (e) {
+      debugPrint('Failed to save future letter: $e');
+    }
+  }
+
+  Future<String> chatWithAICoach(
+    String userMessage,
+    List<Map<String, dynamic>> chatHistory,
+  ) async {
+    final user = _currentUser;
+    if (user == null) {
+      return '請先登入以使用 AI 智能自律導師。';
+    }
+
+    try {
+      // 1. Gather stats
+      final score = todayWeightedDisciplineScore;
+      final completed = todayActionableTaskCompleted;
+      final total = todayActionableTaskTotal;
+      final focusMin = focusMinutes;
+      final sleepHr = sleepHours;
+      final stepCount = steps;
+      final activeRole = userRole;
+
+      // 2. Format today's tasks
+      final taskListString = _tasks
+          .map((t) {
+            final title = t['title'] ?? '無標題';
+            final category = t['category'] ?? '其他';
+            final type = t['taskType'] ?? 'fixed';
+            final isDone = t['done'] == true ? '已完成' : '未完成';
+            return '- [$isDone] $title ($category, $type)';
+          })
+          .join('\n');
+
+      // 3. Format history
+      final historyBuffer = StringBuffer();
+      for (final msg in chatHistory) {
+        final roleName = msg['isUser'] == true ? '使用者' : 'AI導師';
+        historyBuffer.writeln('$roleName: ${msg['text']}');
+      }
+
+      // 4. Build prompt
+      final prompt =
+          '''
+你是一位溫和、專業且極具同理心的「Nudge AI 自律導師」。使用者目前正在跟你對話，請根據以下提供的使用者「今日實時自律數據」與「對話歷史紀錄」，提供最合適的回覆。
+
+【使用者今日自律數據】
+- 目前角色身份模式: $activeRole
+- 加權自律分數: $score 分 / 100
+- 每日任務進度: $completed/$total (完成/總計)
+- 今日專注時數: $focusMin 分鐘
+- 今日健康數據: 睡眠 $sleepHr 小時, 步數 $stepCount 步
+- 今日任務列表:
+$taskListString
+
+【對話歷史紀錄】
+${historyBuffer.toString()}
+
+【使用者最新訊息】
+使用者: $userMessage
+
+【回覆指南】
+1. 請以繁體中文 (Traditional Chinese, zh-Hant) 回覆。
+2. 請維持 Nudge 自律導師的風格：溫柔堅定、溫馨陪伴、注重微調行動（Nudge）而非強加高壓計畫。
+3. 如果使用者要求「診斷我今天的自律數據」，請結合上面的分數、健康與任務完成情況，給出 2 句話的盲點剖析與一個極為具體的「微行動建議」。
+4. 回覆請盡量精煉，避免過長的冗長鋪陳，排版清晰美觀，合適地使用 Emoji。
+''';
+
+      final googleAI = FirebaseAI.googleAI(auth: fb_auth.FirebaseAuth.instance);
+      final model = googleAI.generativeModel(model: 'gemini-flash-latest');
+
+      final response = await model.generateContent([Content.text(prompt)]);
+      return response.text ?? 'AI 導師目前無回應，請稍後再試。';
+    } catch (e) {
+      debugPrint('Error calling Gemini: $e');
+      return 'AI 導師連線失敗，請確認您的網路！\n詳細錯誤：$e';
+    }
+  }
+
+  void importExamTemplate(
+    String type,
+    int days,
+    String effort,
+    String strategy,
+  ) {
+    for (int d = 1; d <= days; d++) {
+      String title = '';
+      if (d == 1) {
+        title = '[$type第$d天] 整理目標與資料';
+      } else if (d == (days / 2).ceil()) {
+        title = '[$type第$d天] 完成主要進度 ($effort)';
+      } else if (d == days) {
+        title = '[$type第$d天] 回顧、補強與提交';
+      } else {
+        title = '[$type第$d天] 執行進度 ($strategy)';
+      }
+      addTask(title, '讀書', taskType: 'fixed', priority: '高');
+    }
+  }
+
+  Future<void> setUserRole(String role) async {
+    _userRole = role;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('user_role_setting', role);
+    final user = _currentUser;
+    if (user != null) {
+      try {
+        final docRef = FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.id);
+        await docRef.update({
+          'userRole': role,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (e) {
+        debugPrint('Failed to update user role in Firestore: $e');
+      }
+    }
+  }
+
+  Future<void> sendParentEncouragementCard(String title, String message) async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.id);
+      final newCard = {
+        'title': title,
+        'meta': '剛剛',
+        'message': message,
+        'createdAt': DateTime.now().toIso8601String(),
+      };
+      final updated = [newCard, ...guardianEncouragements];
+      await docRef.update({
+        'webToolsCollection.encouragements': updated,
+        'webToolsCollection.encouragementsUpdatedAt': DateTime.now()
+            .toIso8601String(),
+      });
+    } catch (e) {
+      debugPrint('Failed to send encouragement card: $e');
+    }
+  }
+
+  Future<void> sendParentSharedGoal(
+    String goal,
+    String permission,
+    String message,
+  ) async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.id);
+      await docRef.update({
+        'webToolsState.guardianInvite': {
+          'goal': goal,
+          'permission': permission,
+          'message': message,
+        },
+        'webToolsState.guardianInviteStatus': {
+          'status': 'pending_child_approval',
+          'updatedAt': DateTime.now().toIso8601String(),
+        },
+      });
+    } catch (e) {
+      debugPrint('Failed to send shared goal: $e');
+    }
+  }
+
+  Future<void> publishGroupChallenge(
+    String groupName,
+    String type,
+    int days,
+    String reward,
+  ) async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.id);
+      await docRef.update({
+        'webToolsState.challenge': {
+          'group': groupName,
+          'type': type,
+          'days': days,
+          'reward': reward,
+          'updatedAt': DateTime.now().toIso8601String(),
+        },
+      });
+    } catch (e) {
+      debugPrint('Failed to publish group challenge: $e');
+    }
+  }
+
+  Future<void> publishStudySchedule(String title, String meta) async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.id);
+      final newSchedule = {
+        'title': title,
+        'meta': meta,
+        'createdAt': DateTime.now().toIso8601String(),
+      };
+      final updated = [newSchedule, ...studySchedules];
+      await docRef.update({
+        'webToolsCollection.studySchedules': updated,
+        'webToolsCollection.studySchedulesUpdatedAt': DateTime.now()
+            .toIso8601String(),
+      });
+    } catch (e) {
+      debugPrint('Failed to publish study schedule: $e');
+    }
+  }
+
+  Future<void> publishExamTemplate(
+    String type,
+    int days,
+    String effort,
+    String strategy,
+  ) async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      final docRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.id);
+      await docRef.update({
+        'webToolsState.template': {
+          'type': type,
+          'days': days,
+          'effort': effort,
+          'pressure': strategy,
+          'updatedAt': DateTime.now().toIso8601String(),
+        },
+      });
+    } catch (e) {
+      debugPrint('Failed to publish exam template: $e');
+    }
+  }
+
+  /// 進行家長/小孩帳號雙向連結綁定
+  Future<void> bindRelative(String relativeId) async {
+    await sendGuardianRequest(relativeId);
+  }
+
+  /// 發送親屬綁定申請
+  Future<void> sendGuardianRequest(String targetNudgeId) async {
+    final user = _currentUser;
+    if (user == null) return;
+    final targetNudgeIdUpper = targetNudgeId.trim().toUpperCase();
+    if (targetNudgeIdUpper.isEmpty) {
+      throw Exception('Nudge ID 不能為空');
+    }
+    if (targetNudgeIdUpper == _myNudgeId.toUpperCase()) {
+      throw Exception('不能與自己進行親屬綁定');
+    }
+    try {
+      // Find the user by username
+      final querySnap = await FirebaseFirestore.instance
+          .collection('users')
+          .where('username', isEqualTo: targetNudgeIdUpper)
+          .limit(1)
+          .get();
+      if (querySnap.docs.isEmpty) {
+        throw Exception('找不到該 Nudge ID 的使用者');
+      }
+      final receiverId = querySnap.docs.first.id;
+      final receiverNudgeId =
+          querySnap.docs.first.data()['username'] as String? ?? '';
+
+      // Check if they are already linked with us
+      if (isGuardianLinked &&
+          guardianInvite?['relativeId'] == receiverNudgeId) {
+        throw Exception('雙方已處於綁定狀態');
+      }
+
+      // Check if there is already a pending request between us (outgoing)
+      final outgoingCheck = await FirebaseFirestore.instance
+          .collection('guardian_requests')
+          .where('senderId', isEqualTo: user.id)
+          .where('receiverId', isEqualTo: receiverId)
+          .where('status', isEqualTo: 'pending')
+          .get();
+      if (outgoingCheck.docs.isNotEmpty) {
+        throw Exception('已發送過綁定申請，請耐心等待對方同意');
+      }
+
+      // Check if there is a pending request from them to us (incoming)
+      final incomingCheck = await FirebaseFirestore.instance
+          .collection('guardian_requests')
+          .where('senderId', isEqualTo: receiverId)
+          .where('receiverId', isEqualTo: user.id)
+          .where('status', isEqualTo: 'pending')
+          .get();
+      if (incomingCheck.docs.isNotEmpty) {
+        // Auto-approve!
+        await approveGuardianRequest(incomingCheck.docs.first.id);
+        return;
+      }
+
+      // Create request doc
+      await FirebaseFirestore.instance.collection('guardian_requests').add({
+        'senderId': user.id,
+        'senderNudgeId': _myNudgeId,
+        'senderNickname': user.nickname,
+        'senderRole': _userRole,
+        'receiverId': receiverId,
+        'receiverNudgeId': receiverNudgeId,
+        'status': 'pending',
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      debugPrint('Failed to send guardian request: $e');
+      rethrow;
+    }
+  }
+
+  /// 同意綁定申請
+  Future<void> approveGuardianRequest(String requestId) async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      await FirebaseFirestore.instance
+          .collection('guardian_requests')
+          .doc(requestId)
+          .update({
+            'status': 'accepted',
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Failed to approve guardian request: $e');
+      rethrow;
+    }
+  }
+
+  /// 拒絕綁定申請
+  Future<void> declineGuardianRequest(String requestId) async {
+    try {
+      await FirebaseFirestore.instance
+          .collection('guardian_requests')
+          .doc(requestId)
+          .update({
+            'status': 'declined',
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Failed to decline guardian request: $e');
+      rethrow;
+    }
+  }
+
+  /// 創建新團體 (房主身份，生成唯一團體 ID)
+  Future<void> createGroup(String name) async {
+    final randomId = 'GRP-${DateTime.now().millisecondsSinceEpoch % 100000}';
+    _groupId = randomId;
+    _groupName = name;
+    _isGroupOwner = true;
+    notifyListeners();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('group_id_setting', randomId);
+    await prefs.setString('group_name_setting', name);
+    await prefs.setBool('is_group_owner_setting', true);
+
+    final user = _currentUser;
+    if (user != null) {
+      try {
+        final docRef = FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.id);
+        await docRef.update({
+          'groupId': randomId,
+          'groupName': name,
+          'isGroupOwner': true,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (e) {
+        debugPrint('Failed to sync created group to firestore: $e');
+      }
+    }
+  }
+
+  /// 加入已有的團體 (成員身份)
+  Future<void> joinGroup(String groupIdInput) async {
+    _groupId = groupIdInput;
+    _groupName = '自律小組';
+    _isGroupOwner = false;
+    notifyListeners();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('group_id_setting', groupIdInput);
+    await prefs.setString('group_name_setting', '自律小組');
+    await prefs.setBool('is_group_owner_setting', false);
+
+    final user = _currentUser;
+    if (user != null) {
+      try {
+        final docRef = FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.id);
+        await docRef.update({
+          'groupId': groupIdInput,
+          'groupName': '自律小組',
+          'isGroupOwner': false,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (e) {
+        debugPrint('Failed to sync joined group to firestore: $e');
+      }
+    }
+  }
+
+  /// 退出或解散當前團體
+  Future<void> leaveGroup() async {
+    _groupId = null;
+    _groupName = null;
+    _isGroupOwner = false;
+    notifyListeners();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('group_id_setting');
+    await prefs.remove('group_name_setting');
+    await prefs.remove('is_group_owner_setting');
+
+    final user = _currentUser;
+    if (user != null) {
+      try {
+        final docRef = FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.id);
+        await docRef.update({
+          'groupId': FieldValue.delete(),
+          'groupName': FieldValue.delete(),
+          'isGroupOwner': FieldValue.delete(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (e) {
+        debugPrint('Failed to sync leave group to firestore: $e');
+      }
+    }
+  }
+
+  void _setupGroupOwnerListener(String myUid, String groupId) {
+    if (_groupOwnerSubscription != null) return;
+    _groupOwnerSubscription = FirebaseFirestore.instance
+        .collection('users')
+        .where('groupId', isEqualTo: groupId)
+        .where('isGroupOwner', isEqualTo: true)
+        .limit(1)
+        .snapshots()
+        .listen(
+          (snapshot) {
+            if (snapshot.docs.isNotEmpty) {
+              final ownerData = snapshot.docs.first.data();
+              bool changed = false;
+              if (ownerData['webToolsState'] != null) {
+                final ownerState = Map<String, dynamic>.from(
+                  ownerData['webToolsState'] as Map,
+                );
+                _webToolsState ??= {};
+                if (ownerState['challenge'] != null) {
+                  _webToolsState!['challenge'] = ownerState['challenge'];
+                  changed = true;
+                }
+                if (ownerState['template'] != null) {
+                  _webToolsState!['template'] = ownerState['template'];
+                  changed = true;
+                }
+              }
+              if (ownerData['webToolsCollection'] != null) {
+                final ownerCollection = Map<String, dynamic>.from(
+                  ownerData['webToolsCollection'] as Map,
+                );
+                _webToolsCollection ??= {};
+                if (ownerCollection['studySchedules'] != null) {
+                  _webToolsCollection!['studySchedules'] =
+                      ownerCollection['studySchedules'];
+                  changed = true;
+                }
+              }
+              if (changed) {
+                notifyListeners();
+              }
+            }
+          },
+          onError: (e) {
+            debugPrint('Error listening to group owner: $e');
+          },
+        );
   }
 }

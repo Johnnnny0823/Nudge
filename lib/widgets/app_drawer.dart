@@ -3,20 +3,19 @@ import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
 import '../theme/app_ui.dart';
-import '../screens/statistics_page.dart';
-import '../screens/today_advice_page.dart';
+import '../screens/personal_analysis_page.dart';
 import '../screens/daily_records_page.dart';
-import '../screens/weekly_report_page.dart';
 import '../screens/badges_page.dart';
 import '../screens/settings_page.dart';
 import '../screens/about_page.dart';
 import '../screens/account_page.dart';
 import '../screens/avatar_shop_page.dart';
 import '../screens/calendar_page.dart';
+import '../screens/character_page.dart';
 import '../screens/coin_wallet_page.dart';
 import '../screens/my_profile_page.dart';
 import '../screens/reminder_center_page.dart';
-import '../widgets/avatar_preview.dart';
+import '../widgets/avatar_icon_preview.dart';
 
 class AppDrawer extends StatelessWidget {
   final VoidCallback? onOpenTasks;
@@ -90,12 +89,35 @@ class AppDrawer extends StatelessWidget {
     );
   }
 
+  Widget _drawerSectionLabel(BuildContext context, String label) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 14, 12, 6),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: AppUI.textSecondaryOf(context),
+          fontSize: 12,
+          fontWeight: FontWeight.w900,
+        ),
+      ),
+    );
+  }
+
+  Widget _drawerSectionDivider(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      child: Divider(
+        color: AppUI.textSecondaryOf(context).withValues(alpha: 0.18),
+        height: 1,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
     final accentColor = appState.currentIconColor;
     final totalScore = appState.todayWeightedDisciplineScore;
-    final secondaryText = AppUI.textSecondaryOf(context);
     final profileTitle = appState.profileTitle.isEmpty
         ? _titleText(totalScore)
         : appState.profileTitle;
@@ -116,10 +138,9 @@ class AppDrawer extends StatelessWidget {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      AvatarPreview(
-                        profile: appState.avatarProfile,
+                      AvatarIconPreview(
+                        index: appState.avatarProfile.avatarIconIndex,
                         size: 74,
-                        showBackgroundRing: true,
                       ),
                       const SizedBox(width: 14),
                       Expanded(
@@ -197,21 +218,12 @@ class AppDrawer extends StatelessWidget {
               child: ListView(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 children: [
+                  _drawerSectionLabel(context, '今天行動'),
                   _drawerItem(
                     context: context,
-                    icon: Icons.bar_chart_rounded,
-                    title: '統計分析',
-                    onTap: () => _openPage(context, const StatisticsPage()),
-                    accentColor: accentColor,
-                  ),
-                  _drawerItem(
-                    context: context,
-                    icon: Icons.tips_and_updates_outlined,
-                    title: '今日建議',
-                    onTap: () => _openPage(
-                      context,
-                      TodayAdvicePage(onOpenTasks: onOpenTasks),
-                    ),
+                    icon: Icons.notifications_active_outlined,
+                    title: '提醒中心',
+                    onTap: () => _openPage(context, const ReminderCenterPage()),
                     accentColor: accentColor,
                   ),
                   _drawerItem(
@@ -228,11 +240,13 @@ class AppDrawer extends StatelessWidget {
                     onTap: () => _openPage(context, const CalendarPage()),
                     accentColor: accentColor,
                   ),
+                  _drawerSectionDivider(context),
+                  _drawerSectionLabel(context, '回顧分析'),
                   _drawerItem(
                     context: context,
-                    icon: Icons.assessment_outlined,
-                    title: '每週報告',
-                    onTap: () => _openPage(context, const WeeklyReportPage()),
+                    icon: Icons.analytics_outlined,
+                    title: '個人進階分析',
+                    onTap: () => _openPage(context, const PersonalAnalysisPage()),
                     accentColor: accentColor,
                   ),
                   _drawerItem(
@@ -240,6 +254,22 @@ class AppDrawer extends StatelessWidget {
                     icon: Icons.emoji_events_outlined,
                     title: '成就徽章',
                     onTap: () => _openPage(context, const BadgesPage()),
+                    accentColor: accentColor,
+                  ),
+                  _drawerSectionDivider(context),
+                  _drawerSectionLabel(context, '角色與獎勵'),
+                  _drawerItem(
+                    context: context,
+                    icon: Icons.auto_awesome_outlined,
+                    title: '角色中心',
+                    onTap: () => _openPage(context, const CharacterPage()),
+                    accentColor: accentColor,
+                  ),
+                  _drawerItem(
+                    context: context,
+                    icon: Icons.storefront_outlined,
+                    title: '造型商城',
+                    onTap: () => _openPage(context, const AvatarShopPage()),
                     accentColor: accentColor,
                   ),
                   _drawerItem(
@@ -252,33 +282,14 @@ class AppDrawer extends StatelessWidget {
                     ),
                     accentColor: accentColor,
                   ),
-                  _drawerItem(
-                    context: context,
-                    icon: Icons.checkroom_outlined,
-                    title: '時裝商城',
-                    onTap: () => _openPage(context, const AvatarShopPage()),
-                    accentColor: accentColor,
-                  ),
+                  _drawerSectionDivider(context),
+                  _drawerSectionLabel(context, '帳號設定'),
                   _drawerItem(
                     context: context,
                     icon: Icons.account_circle_outlined,
                     title: '帳號與同步',
                     onTap: () => _openPage(context, const AccountPage()),
                     accentColor: accentColor,
-                  ),
-                  _drawerItem(
-                    context: context,
-                    icon: Icons.notifications_active_outlined,
-                    title: '提醒中心',
-                    onTap: () => _openPage(context, const ReminderCenterPage()),
-                    accentColor: accentColor,
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    child: Divider(
-                      color: secondaryText.withValues(alpha: 0.35),
-                      height: 1,
-                    ),
                   ),
                   _drawerItem(
                     context: context,

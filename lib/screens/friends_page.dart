@@ -36,51 +36,6 @@ class _FriendsPageState extends State<FriendsPage> {
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
-  List<FriendListItemData> _buildFriendsFromRooms(List<StudyRoomData> rooms) {
-    final Map<String, FriendListItemData> merged = {};
-
-    for (final room in rooms) {
-      for (final member in room.members) {
-        if (member.memberId == 'local_user' || member.name == '老闆') continue;
-
-        final existing = merged[member.name];
-        final derivedScore = (40 + (member.todayFocusSeconds / 60 / 2))
-            .clamp(0, 100)
-            .round();
-
-        final title = switch (member.status) {
-          StudyMemberStatus.studying => '正在專注中',
-          StudyMemberStatus.resting => '剛休息一下',
-          StudyMemberStatus.offline => '今天慢慢前進',
-        };
-
-        final data = FriendListItemData(
-          id: member.memberId.isEmpty ? member.name : member.memberId,
-          name: member.name,
-          signature: title,
-          score: derivedScore,
-          todayFocusSeconds: member.todayFocusSeconds,
-          avatarColor: member.avatarColor,
-          avatarProfile: member.avatarProfile,
-          roomId: room.id,
-          roomName: room.name,
-          roomNickname: member.roomNickname.isEmpty
-              ? member.name
-              : member.roomNickname,
-          memberStatus: member.status,
-        );
-
-        if (existing == null) {
-          merged[member.name] = data;
-        } else if (data.todayFocusSeconds > existing.todayFocusSeconds) {
-          merged[member.name] = data;
-        }
-      }
-    }
-
-    return merged.values.toList();
-  }
-
   List<FriendListItemData> _buildManualFriends(
     List<SocialFriendProfile> friends,
   ) {
@@ -223,15 +178,7 @@ class _FriendsPageState extends State<FriendsPage> {
     final primaryText = AppUI.textPrimaryOf(context);
     final secondaryText = AppUI.textSecondaryOf(context);
 
-    final roomFriends = _buildFriendsFromRooms(appState.studyRooms);
-    final manualFriends = _buildManualFriends(appState.socialFriends);
-
-    final allFriendsMap = <String, FriendListItemData>{};
-    for (final friend in [...roomFriends, ...manualFriends]) {
-      allFriendsMap[friend.id] = friend;
-    }
-
-    final friends = allFriendsMap.values.toList()
+    final friends = _buildManualFriends(appState.socialFriends)
       ..sort((a, b) => b.todayFocusSeconds.compareTo(a.todayFocusSeconds));
 
     final filteredFriends = _applyFilters(friends);
@@ -279,7 +226,7 @@ class _FriendsPageState extends State<FriendsPage> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          '目前有 $studyingCount 位好友正在專注，之後這裡也能承接角色換裝與好友展示。',
+                          '目前有 $studyingCount 位好友正在專注，好友卡會同步顯示角色穿搭與公開頁狀態。',
                           style: TextStyle(
                             fontSize: 13,
                             color: secondaryText,

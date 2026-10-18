@@ -71,6 +71,10 @@ class AppUI {
     return isDark(context) ? darkCard : lightCard;
   }
 
+  static Color surfaceVariantOf(BuildContext context) {
+    return isDark(context) ? const Color(0xFF202530) : const Color(0xFFF4F1FF);
+  }
+
   static Color scaffoldBackgroundOf(BuildContext context) {
     return Colors.transparent;
   }
@@ -96,6 +100,54 @@ class AppUI {
       case 'softGlow':
       default:
         return '預設柔光';
+    }
+  }
+
+  static String backgroundThemeDescription(String key) {
+    switch (key) {
+      case 'nightStudy':
+        return '適合晚間讀書與深度專注，讓整個 App 像安靜書桌。';
+      case 'sakuraWalk':
+        return '把健康步行和輕任務變成柔和的戶外節奏。';
+      case 'galaxySleep':
+        return '睡眠、恢復和夜間檢視用的沉靜銀河氛圍。';
+      case 'gymEnergy':
+        return '運動與行動任務用的高能量綠色主題。';
+      case 'softGlow':
+      default:
+        return '預設背景主題，所有使用者一開始就能套用。';
+    }
+  }
+
+  static IconData backgroundThemeIcon(String key) {
+    switch (key) {
+      case 'nightStudy':
+        return Icons.menu_book_outlined;
+      case 'sakuraWalk':
+        return Icons.directions_walk_rounded;
+      case 'galaxySleep':
+        return Icons.bedtime_outlined;
+      case 'gymEnergy':
+        return Icons.fitness_center_rounded;
+      case 'softGlow':
+      default:
+        return Icons.auto_awesome_outlined;
+    }
+  }
+
+  static int backgroundThemePrice(String key) {
+    switch (key) {
+      case 'nightStudy':
+        return 35;
+      case 'sakuraWalk':
+        return 45;
+      case 'galaxySleep':
+        return 55;
+      case 'gymEnergy':
+        return 40;
+      case 'softGlow':
+      default:
+        return 0;
     }
   }
 

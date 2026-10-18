@@ -31,6 +31,16 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      - name: Inject Firebase web API key
+        env:
+          FIREBASE_WEB_API_KEY: ${{ secrets.FIREBASE_WEB_API_KEY }}
+        run: |
+          if [ -z "$FIREBASE_WEB_API_KEY" ]; then
+            echo "::warning::未設定 FIREBASE_WEB_API_KEY secret，網頁後台將無法連線 Firebase"
+            exit 0
+          fi
+          sed -i "s/__FIREBASE_WEB_API_KEY__/${FIREBASE_WEB_API_KEY}/g" web_dashboard/assets/app.js web_dashboard/login.html
+
       - name: Upload dashboard artifact
         uses: actions/upload-pages-artifact@v3
         with:

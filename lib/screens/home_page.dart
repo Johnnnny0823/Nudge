@@ -1,13 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../models/task_model.dart';
 import '../state/app_state.dart';
 import '../widgets/app_drawer.dart';
 import '../theme/app_ui.dart';
 import 'coin_wallet_page.dart';
-import 'today_advice_page.dart';
 import 'badges_page.dart';
-import 'weekly_report_page.dart';
+import 'tasks_page.dart';
+import 'today_data_page.dart';
+import 'guardian_center_page.dart';
+import 'guardian_parent_page.dart';
+import 'group_management_page.dart';
+import 'personal_analysis_page.dart';
+import 'ai_assistant_page.dart';
+import 'time_capsule_page.dart';
+import 'future_letter_page.dart';
+import 'leaderboard_page.dart';
 
 class HomePage extends StatelessWidget {
   final void Function(int) onNavigate;
@@ -18,50 +25,6 @@ class HomePage extends StatelessWidget {
     required this.onNavigate,
     required this.onOpenStatistics,
   });
-
-  int calculateDisciplineScoreFromTasks(List<Map<String, dynamic>> tasks) {
-    if (tasks.isEmpty) return 0;
-    final completedCount = tasks.where((task) => task['done'] == true).length;
-    return ((completedCount / tasks.length) * 100).round().clamp(0, 100);
-  }
-
-  IconData getStatusIcon(int score) {
-    if (score >= 90) return Icons.sentiment_very_satisfied;
-    if (score >= 70) return Icons.sentiment_satisfied_alt;
-    if (score >= 50) return Icons.sentiment_neutral;
-    return Icons.sentiment_dissatisfied;
-  }
-
-  Color getStatusIconBackground(int score) {
-    if (score >= 90) return Colors.white.withValues(alpha: 0.26);
-    if (score >= 70) return Colors.white.withValues(alpha: 0.22);
-    if (score >= 50) return Colors.white.withValues(alpha: 0.18);
-    return Colors.white.withValues(alpha: 0.14);
-  }
-
-  String getStatusTitle(int score) {
-    if (score >= 90) return '今天表現很穩定';
-    if (score >= 70) return '今天進度不錯';
-    if (score >= 50) return '今天還能再補強';
-    return '今天先慢慢來';
-  }
-
-  String getStatusSubtitle(int score, int completedCount, int totalTasks) {
-    if (totalTasks == 0) {
-      return '今天還沒有任務，先新增一個明確目標吧。';
-    }
-
-    if (score >= 90) {
-      return '你今天已完成 $completedCount / $totalTasks 個任務，繼續保持。';
-    }
-    if (score >= 70) {
-      return '目前已完成 $completedCount / $totalTasks 個任務，進度很不錯。';
-    }
-    if (score >= 50) {
-      return '目前已完成 $completedCount / $totalTasks 個任務，再努力一點就能更好。';
-    }
-    return '目前已完成 $completedCount / $totalTasks 個任務，先把最重要的一件事完成就好。';
-  }
 
   int _quickActionCrossAxisCount(double width) {
     if (width < 520) return 2;
@@ -79,33 +42,109 @@ class HomePage extends StatelessWidget {
     final appState = context.watch<AppState>();
     final accentColor = appState.currentIconColor;
 
-    final todayTasks = appState.todayActionableTaskModels;
     final completedCount = appState.todayActionableTaskCompleted;
     final totalTasks = appState.todayActionableTaskTotal;
     final disciplineScore = appState.todayWeightedDisciplineScore;
-    final overallProgress = totalTasks == 0
-        ? 0.0
-        : (completedCount / totalTasks).clamp(0.0, 1.0);
-    final recommendedTasks = todayTasks.where((task) => !task.isDone).toList()
-      ..sort(
-        (a, b) => appState
-            .taskPotentialScoreForTask(b)
-            .compareTo(appState.taskPotentialScoreForTask(a)),
-      );
-    final recommendedTask = recommendedTasks.isEmpty
-        ? null
-        : recommendedTasks.first;
 
     final primaryText = AppUI.textPrimaryOf(context);
     final secondaryText = AppUI.textSecondaryOf(context);
     final isDark = AppUI.isDark(context);
+    
+    void openTasksPage() {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const TasksPage()),
+      );
+    }
+
+    // Determine dashboard and gated card based on active role
+    Widget? heroCard;
+    bool isGated = false;
+    Widget? gateCard;
+
+    if (appState.userRole == 'guardian') {
+      if (!appState.isGuardianLinked) {
+        isGated = true;
+        gateCard = _BindingGatedCard(
+          appState: appState,
+          accentColor: accentColor,
+          role: 'guardian',
+        );
+      } else {
+        heroCard = _GuardianHeroDashboardCard(
+          appState: appState,
+          accentColor: accentColor,
+        );
+      }
+    } else if (appState.userRole == 'child') {
+      if (!appState.isGuardianLinked) {
+        isGated = true;
+        gateCard = _BindingGatedCard(
+          appState: appState,
+          accentColor: accentColor,
+          role: 'child',
+        );
+      } else {
+        heroCard = _ChildHeroDashboardCard(
+          appState: appState,
+          accentColor: accentColor,
+        );
+      }
+    } else if (appState.userRole == 'group' ||
+               appState.userRole == 'enterprise' ||
+               appState.userRole == 'tutor' ||
+               appState.userRole == 'school') {
+      if (appState.groupId == null) {
+        isGated = true;
+        gateCard = _GroupBindingGatedCard(
+          appState: appState,
+          accentColor: accentColor,
+        );
+      } else {
+        heroCard = _GroupHeroDashboardCard(
+          appState: appState,
+          accentColor: accentColor,
+        );
+      }
+    } else {
+      // Default personal mode (no linkage required)
+      heroCard = _HeroDashboardCard(
+        score: disciplineScore,
+        completedCount: completedCount,
+        totalTasks: totalTasks,
+        focusMinutes: appState.focusMinutes,
+        sleepHours: appState.sleepHours,
+        steps: appState.steps,
+        isHealthConnected: appState.isHealthConnected,
+        accentColor: accentColor,
+      );
+    }
 
     return Scaffold(
       backgroundColor: AppUI.scaffoldBackgroundOf(context),
-      drawer: AppDrawer(onOpenTasks: () => onNavigate(1)),
+      drawer: AppDrawer(onOpenTasks: openTasksPage),
       appBar: AppBar(
-        title: const Text('首頁'),
+        title: Text(appState.userRole == 'guardian'
+            ? '家長陪伴端'
+            : (appState.userRole == 'child'
+                ? '孩子端'
+                : (appState.userRole == 'group' ? '自律團體端' : '個人首頁'))),
         actions: [
+          Center(
+            child: _PlanetPill(
+              planetCount: appState.planetCount,
+              accentColor: const Color(0xFFA855F7),
+              onTap: () {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('您已在 Web 端解鎖了 ${appState.planetCount} 顆自律星球！'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(width: 8),
           Padding(
             padding: const EdgeInsets.only(right: 12),
             child: Center(
@@ -116,8 +155,7 @@ class HomePage extends StatelessWidget {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) =>
-                          CoinWalletPage(onOpenTasks: () => onNavigate(1)),
+                      builder: (_) => CoinWalletPage(onOpenTasks: openTasksPage),
                     ),
                   );
                 },
@@ -133,129 +171,226 @@ class HomePage extends StatelessWidget {
           AppUI.pagePadding,
           24,
         ),
-        children: [
-          _HeroDashboardCard(
-            score: disciplineScore,
-            progress: overallProgress,
-            statusTitle: getStatusTitle(disciplineScore),
-            statusSubtitle: getStatusSubtitle(
-              disciplineScore,
-              completedCount,
-              totalTasks,
-            ),
-            statusIcon: getStatusIcon(disciplineScore),
-            statusIconBackground: getStatusIconBackground(disciplineScore),
-            accentColor: accentColor,
-          ),
-          const SizedBox(height: AppUI.sectionGap),
-          _TodayActionCenter(
-            completedCount: completedCount,
-            totalTasks: totalTasks,
-            focusMinutes: appState.focusMinutes,
-            sleepHours: appState.sleepHours,
-            steps: appState.steps,
-            isHealthConnected: appState.isHealthConnected,
-            recommendedTask: recommendedTask,
-            potentialScore: recommendedTask == null
-                ? 0
-                : appState.taskPotentialScoreForTask(recommendedTask),
-            reason: recommendedTask == null
-                ? ''
-                : appState.taskRewardReasonForTask(recommendedTask),
-            accentColor: accentColor,
-            primaryText: primaryText,
-            secondaryText: secondaryText,
-            onOpenTasks: () => onNavigate(1),
-            onOpenAdvice: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => TodayAdvicePage(
-                    onOpenTasks: () => onNavigate(1),
-                    onNavigate: onNavigate,
-                  ),
-                ),
-              );
-            },
-            onOpenStatistics: onOpenStatistics,
-          ),
-          const SizedBox(height: AppUI.sectionGap),
-          _SectionTitle(title: '工具入口', color: primaryText),
-          const SizedBox(height: AppUI.cardGap),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final width = constraints.maxWidth;
-              return GridView.count(
-                crossAxisCount: _quickActionCrossAxisCount(width),
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                childAspectRatio: _quickActionAspectRatio(width),
-                children: [
-                  _QuickActionCard(
-                    icon: Icons.bar_chart_rounded,
-                    title: '統計分析',
-                    onTap: onOpenStatistics,
+        children: isGated
+            ? [
+                const SizedBox(height: 16),
+                gateCard!,
+              ]
+            : [
+                heroCard!,
+                const SizedBox(height: AppUI.sectionGap),
+                
+                // Show action center only if not guardian mode (guardian has separate dashboard metrics)
+                if (appState.userRole != 'guardian') ...[
+                  _TodayActionCenter(
+                    completedCount: completedCount,
+                    totalTasks: totalTasks,
                     accentColor: accentColor,
                     primaryText: primaryText,
                     secondaryText: secondaryText,
-                    isDark: isDark,
-                  ),
-                  _QuickActionCard(
-                    icon: Icons.tips_and_updates_outlined,
-                    title: '今日建議',
-                    onTap: () {
+                    onOpenTasks: openTasksPage,
+                    onOpenData: () {
                       Navigator.push(
                         context,
-                        MaterialPageRoute(
-                          builder: (_) => TodayAdvicePage(
-                            onOpenTasks: () => onNavigate(1),
-                            onNavigate: onNavigate,
-                          ),
-                        ),
+                        MaterialPageRoute(builder: (_) => const TodayDataPage()),
                       );
                     },
-                    accentColor: accentColor,
-                    primaryText: primaryText,
-                    secondaryText: secondaryText,
-                    isDark: isDark,
                   ),
-                  _QuickActionCard(
-                    icon: Icons.emoji_events_outlined,
-                    title: '成就徽章',
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const BadgesPage()),
-                      );
-                    },
-                    accentColor: accentColor,
-                    primaryText: primaryText,
-                    secondaryText: secondaryText,
-                    isDark: isDark,
-                  ),
-                  _QuickActionCard(
-                    icon: Icons.calendar_month_outlined,
-                    title: '每週報告',
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const WeeklyReportPage(),
-                        ),
-                      );
-                    },
-                    accentColor: accentColor,
-                    primaryText: primaryText,
-                    secondaryText: secondaryText,
-                    isDark: isDark,
-                  ),
+                  const SizedBox(height: AppUI.sectionGap),
                 ],
-              );
-            },
-          ),
-        ],
+
+                _SectionTitle(title: '工具入口', color: primaryText),
+                const SizedBox(height: AppUI.cardGap),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final width = constraints.maxWidth;
+                    
+                    // Filter quick action cards based on active role
+                    final List<Widget> actionCards = [];
+
+                    if (appState.userRole == 'guardian') {
+                      actionCards.addAll([
+                        _QuickActionCard(
+                          icon: Icons.family_restroom_rounded,
+                          title: '家長陪伴中心',
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (_) => const GuardianCenterPage()),
+                            );
+                          },
+                          accentColor: accentColor,
+                          primaryText: primaryText,
+                          secondaryText: secondaryText,
+                          isDark: isDark,
+                        ),
+                        _QuickActionCard(
+                          icon: Icons.favorite_outline,
+                          title: '鼓勵發送',
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (_) => const GuardianParentPage()),
+                            );
+                          },
+                          accentColor: accentColor,
+                          primaryText: primaryText,
+                          secondaryText: secondaryText,
+                          isDark: isDark,
+                        ),
+                        _QuickActionCard(
+                          icon: Icons.bar_chart_rounded,
+                          title: '孩子數據統計',
+                          onTap: onOpenStatistics,
+                          accentColor: accentColor,
+                          primaryText: primaryText,
+                          secondaryText: secondaryText,
+                          isDark: isDark,
+                        ),
+                      ]);
+                    } else if (appState.userRole == 'group' ||
+                               appState.userRole == 'enterprise' ||
+                               appState.userRole == 'tutor' ||
+                               appState.userRole == 'school') {
+                      actionCards.addAll([
+                        _QuickActionCard(
+                          icon: Icons.admin_panel_settings_outlined,
+                          title: '教育管理中心',
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (_) => const GroupManagementPage()),
+                            );
+                          },
+                          accentColor: accentColor,
+                          primaryText: primaryText,
+                          secondaryText: secondaryText,
+                          isDark: isDark,
+                        ),
+                        _QuickActionCard(
+                          icon: Icons.analytics_outlined,
+                          title: '團隊分析統計',
+                          onTap: onOpenStatistics,
+                          accentColor: accentColor,
+                          primaryText: primaryText,
+                          secondaryText: secondaryText,
+                          isDark: isDark,
+                        ),
+                      ]);
+                    } else {
+                      // Default personal tools
+                      actionCards.addAll([
+                        _QuickActionCard(
+                          icon: Icons.analytics_outlined,
+                          title: '個人進階分析',
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const PersonalAnalysisPage(),
+                              ),
+                            );
+                          },
+                          accentColor: accentColor,
+                          primaryText: primaryText,
+                          secondaryText: secondaryText,
+                          isDark: isDark,
+                        ),
+                        _QuickActionCard(
+                          icon: Icons.psychology_alt_outlined,
+                          title: 'AI 自律助手',
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const AIAssistantPage(),
+                              ),
+                            );
+                          },
+                          accentColor: const Color(0xFFA855F7), // Purple accent
+                          primaryText: primaryText,
+                          secondaryText: secondaryText,
+                          isDark: isDark,
+                        ),
+                        _QuickActionCard(
+                          icon: Icons.hourglass_empty_rounded,
+                          title: '時間膠囊',
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const TimeCapsulePage(),
+                              ),
+                            );
+                          },
+                          accentColor: const Color(0xFFF59E0B), // Orange accent
+                          primaryText: primaryText,
+                          secondaryText: secondaryText,
+                          isDark: isDark,
+                        ),
+                        _QuickActionCard(
+                          icon: Icons.mail_outline_rounded,
+                          title: '未來的信',
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const FutureLetterPage(),
+                              ),
+                            );
+                          },
+                          accentColor: const Color(0xFFEC4899), // Pink accent
+                          primaryText: primaryText,
+                          secondaryText: secondaryText,
+                          isDark: isDark,
+                        ),
+                        _QuickActionCard(
+                          icon: Icons.emoji_events_outlined,
+                          title: '成就徽章',
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const BadgesPage(),
+                              ),
+                            );
+                          },
+                          accentColor: const Color(0xFF10B981), // Green accent
+                          primaryText: primaryText,
+                          secondaryText: secondaryText,
+                          isDark: isDark,
+                        ),
+                        _QuickActionCard(
+                          icon: Icons.leaderboard_rounded,
+                          title: '自律排行榜',
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const LeaderboardPage(),
+                              ),
+                            );
+                          },
+                          accentColor: const Color(0xFF3B82F6), // Blue accent
+                          primaryText: primaryText,
+                          secondaryText: secondaryText,
+                          isDark: isDark,
+                        ),
+                      ]);
+                    }
+
+                    return GridView.count(
+                      crossAxisCount: _quickActionCrossAxisCount(width),
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      childAspectRatio: _quickActionAspectRatio(width),
+                      children: actionCards,
+                    );
+                  },
+                ),
+              ],
       ),
     );
   }
@@ -263,25 +398,33 @@ class HomePage extends StatelessWidget {
 
 class _HeroDashboardCard extends StatelessWidget {
   final int score;
-  final double progress;
-  final String statusTitle;
-  final String statusSubtitle;
-  final IconData statusIcon;
-  final Color statusIconBackground;
+  final int completedCount;
+  final int totalTasks;
+  final int focusMinutes;
+  final double sleepHours;
+  final int steps;
+  final bool isHealthConnected;
   final Color accentColor;
 
   const _HeroDashboardCard({
     required this.score,
-    required this.progress,
-    required this.statusTitle,
-    required this.statusSubtitle,
-    required this.statusIcon,
-    required this.statusIconBackground,
+    required this.completedCount,
+    required this.totalTasks,
+    required this.focusMinutes,
+    required this.sleepHours,
+    required this.steps,
+    required this.isHealthConnected,
     required this.accentColor,
   });
 
   @override
   Widget build(BuildContext context) {
+    final statusText = score >= 90
+        ? '今日狀態很好'
+        : score >= 60
+        ? '今日穩定推進'
+        : '今日正在起步';
+
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -290,142 +433,112 @@ class _HeroDashboardCard extends StatelessWidget {
           end: Alignment.bottomRight,
           colors: [
             accentColor.withValues(alpha: 0.95),
-            accentColor.withValues(alpha: 0.76),
-            const Color(0xFF0F766E),
+            Color.lerp(accentColor, const Color(0xFF4F8CFF), 0.42) ??
+                accentColor,
+            const Color(0xFF0F766E).withValues(alpha: 0.96),
           ],
+          stops: const [0, 0.58, 1],
         ),
         borderRadius: BorderRadius.circular(AppUI.radiusLarge),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.20)),
         boxShadow: [
           BoxShadow(
-            color: accentColor.withValues(alpha: 0.22),
-            blurRadius: 24,
-            offset: const Offset(0, 12),
+            color: accentColor.withValues(alpha: 0.24),
+            blurRadius: 28,
+            offset: const Offset(0, 14),
           ),
         ],
       ),
-      child: Stack(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Positioned(
-            top: -18,
-            right: -14,
-            child: Container(
-              width: 96,
-              height: 96,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
-              ),
-            ),
+          const _DashboardPill(
+            icon: Icons.data_usage_rounded,
+            label: '今日儀表板',
+            color: Colors.white,
           ),
+          const SizedBox(height: 16),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 9,
-                      vertical: 5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.16),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.data_usage_rounded,
-                          color: Colors.white,
-                          size: 14,
-                        ),
-                        SizedBox(width: 5),
-                        Text(
-                          '今日自律儀表板',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Spacer(),
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: statusIconBackground,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(statusIcon, color: Colors.white, size: 24),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    '$score',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 42,
-                      fontWeight: FontWeight.w900,
-                      height: 0.9,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 2),
-                    child: Text(
-                      '分',
-                      style: TextStyle(
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      '$score',
+                      maxLines: 1,
+                      style: const TextStyle(
                         color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
+                        fontSize: 50,
+                        fontWeight: FontWeight.w900,
+                        height: 0.9,
                       ),
                     ),
-                  ),
-                  const Spacer(),
-                  _RecordSignalPill(progress: progress),
-                ],
+                    const SizedBox(width: 7),
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        '分',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 6),
               Text(
-                statusTitle,
+                statusText,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.78),
+                  fontSize: 13,
                   fontWeight: FontWeight.w800,
                 ),
               ),
-              const SizedBox(height: 4),
-              Text(
-                statusSubtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 12,
-                  height: 1.4,
-                ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          GridView.count(
+            crossAxisCount: 2,
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            childAspectRatio: 2.55,
+            children: [
+              _DashboardMetricCard(
+                icon: Icons.task_alt_outlined,
+                label: '任務',
+                value: '$completedCount/$totalTasks',
+                color: const Color(0xFF34D399),
               ),
-              const SizedBox(height: 14),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(AppUI.radiusPill),
-                child: LinearProgressIndicator(
-                  value: progress,
-                  minHeight: 7,
-                  backgroundColor: Colors.white24,
-                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
-                ),
+              _DashboardMetricCard(
+                icon: Icons.timer_outlined,
+                label: '專注',
+                value: '$focusMinutes 分',
+                color: const Color(0xFF93C5FD),
+              ),
+              _DashboardMetricCard(
+                icon: Icons.bedtime_outlined,
+                label: '睡眠',
+                value: isHealthConnected
+                    ? '${sleepHours.toStringAsFixed(1)} 小時'
+                    : '未同步',
+                color: const Color(0xFFC4B5FD),
+              ),
+              _DashboardMetricCard(
+                icon: Icons.directions_walk,
+                label: '步數',
+                value: isHealthConnected ? '$steps' : '未同步',
+                color: const Color(0xFF6EE7B7),
               ),
             ],
           ),
@@ -435,38 +548,111 @@ class _HeroDashboardCard extends StatelessWidget {
   }
 }
 
-class _RecordSignalPill extends StatelessWidget {
-  final double progress;
+class _DashboardPill extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
 
-  const _RecordSignalPill({required this.progress});
+  const _DashboardPill({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+        color: Colors.white.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(AppUI.radiusPill),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 7,
-            height: 7,
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              shape: BoxShape.circle,
+          Icon(icon, color: color, size: 14),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: color,
+              fontSize: 12,
+              fontWeight: FontWeight.w900,
             ),
           ),
-          const SizedBox(width: 6),
-          Text(
-            '已記錄 ${(progress * 100).round()}%',
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 11,
-              fontWeight: FontWeight.w800,
+        ],
+      ),
+    );
+  }
+}
+
+class _DashboardMetricCard extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
+
+  const _DashboardMetricCard({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(11),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.13),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.20)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.20),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: color, size: 18),
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    value,
+                    maxLines: 1,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -478,42 +664,24 @@ class _RecordSignalPill extends StatelessWidget {
 class _TodayActionCenter extends StatelessWidget {
   final int completedCount;
   final int totalTasks;
-  final int focusMinutes;
-  final double sleepHours;
-  final int steps;
-  final bool isHealthConnected;
-  final TaskModel? recommendedTask;
-  final int potentialScore;
-  final String reason;
   final Color accentColor;
   final Color primaryText;
   final Color secondaryText;
   final VoidCallback onOpenTasks;
-  final VoidCallback onOpenAdvice;
-  final VoidCallback onOpenStatistics;
+  final VoidCallback onOpenData;
 
   const _TodayActionCenter({
     required this.completedCount,
     required this.totalTasks,
-    required this.focusMinutes,
-    required this.sleepHours,
-    required this.steps,
-    required this.isHealthConnected,
-    required this.recommendedTask,
-    required this.potentialScore,
-    required this.reason,
     required this.accentColor,
     required this.primaryText,
     required this.secondaryText,
     required this.onOpenTasks,
-    required this.onOpenAdvice,
-    required this.onOpenStatistics,
+    required this.onOpenData,
   });
 
   @override
   Widget build(BuildContext context) {
-    final task = recommendedTask;
-
     return Card(
       shape: AppUI.cardShape(),
       child: Padding(
@@ -538,92 +706,34 @@ class _TodayActionCenter extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
-            GridView.count(
-              crossAxisCount: 2,
-              crossAxisSpacing: 8,
-              mainAxisSpacing: 8,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              childAspectRatio: 3.6,
-              children: [
-                _ActionInfoPill(
-                  icon: Icons.task_alt_outlined,
-                  label: '任務',
-                  value: '$completedCount/$totalTasks',
-                  color: AppUI.green,
-                ),
-                _ActionInfoPill(
-                  icon: Icons.timer_outlined,
-                  label: '專注',
-                  value: '$focusMinutes 分',
-                  color: AppUI.blue,
-                ),
-                _ActionInfoPill(
-                  icon: Icons.bedtime_outlined,
-                  label: '睡眠',
-                  value: isHealthConnected
-                      ? '${sleepHours.toStringAsFixed(1)} 小時'
-                      : '未同步',
-                  color: AppUI.purple,
-                ),
-                _ActionInfoPill(
-                  icon: Icons.directions_walk,
-                  label: '步數',
-                  value: isHealthConnected ? '$steps' : '未同步',
-                  color: AppUI.green,
-                ),
-              ],
+            _PrimaryTaskButton(
+              completedCount: completedCount,
+              totalTasks: totalTasks,
+              color: accentColor,
+              primaryText: primaryText,
+              secondaryText: secondaryText,
+              onPressed: onOpenTasks,
             ),
-            const SizedBox(height: 12),
-            if (task == null)
-              _EmptyRecommendationCard(
-                onOpenTasks: onOpenTasks,
-                onOpenAdvice: onOpenAdvice,
-                primaryText: primaryText,
-                secondaryText: secondaryText,
-                accentColor: accentColor,
-              )
-            else
-              _RecommendedTaskCard(
-                task: task,
-                potentialScore: potentialScore,
-                reason: reason,
-                accentColor: accentColor,
-                primaryText: primaryText,
-                secondaryText: secondaryText,
-                onGradient: false,
-                onTap: onOpenTasks,
-              ),
             const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
-                  child: _HeroActionButton(
-                    icon: Icons.checklist_outlined,
-                    label: '任務',
+                  child: _ActionCenterCard(
+                    icon: Icons.edit_note_rounded,
+                    title: '任務',
+                    subtitle: '整理今日行動',
                     color: accentColor,
-                    onGradient: false,
-                    onPressed: onOpenTasks,
+                    onTap: onOpenTasks,
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 10),
                 Expanded(
-                  child: _HeroActionButton(
-                    icon: Icons.tips_and_updates_outlined,
-                    label: '建議',
-                    color: accentColor,
-                    onGradient: false,
-                    onPressed: onOpenAdvice,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _HeroActionButton(
-                    icon: Icons.insights_outlined,
-                    label: '分析',
-                    color: accentColor,
-                    onGradient: false,
-                    onPressed: onOpenStatistics,
+                  child: _ActionCenterCard(
+                    icon: Icons.monitor_heart_outlined,
+                    title: '數據',
+                    subtitle: '查看今日核心',
+                    color: const Color(0xFF4F8CFF),
+                    onTap: onOpenData,
                   ),
                 ),
               ],
@@ -635,274 +745,48 @@ class _TodayActionCenter extends StatelessWidget {
   }
 }
 
-class _ActionInfoPill extends StatelessWidget {
+class _ActionCenterCard extends StatelessWidget {
   final IconData icon;
-  final String label;
-  final String value;
+  final String title;
+  final String subtitle;
   final Color color;
-
-  const _ActionInfoPill({
-    required this.icon,
-    required this.label,
-    required this.value,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: AppUI.softCardOf(context, color),
-      child: Row(
-        children: [
-          Icon(icon, color: color, size: 17),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              '$label $value',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: color,
-                fontSize: 13,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _HeroActionButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final Color color;
-  final bool onGradient;
-  final VoidCallback onPressed;
-
-  const _HeroActionButton({
-    required this.icon,
-    required this.label,
-    this.color = Colors.white,
-    this.onGradient = true,
-    required this.onPressed,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return OutlinedButton.icon(
-      onPressed: onPressed,
-      icon: Icon(icon, size: 18),
-      label: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
-      style: OutlinedButton.styleFrom(
-        foregroundColor: onGradient ? Colors.white : color,
-        backgroundColor: onGradient
-            ? Colors.white.withValues(alpha: 0.10)
-            : color.withValues(alpha: 0.08),
-        side: BorderSide(
-          color: onGradient
-              ? Colors.white.withValues(alpha: 0.52)
-              : color.withValues(alpha: 0.35),
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 9),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800),
-      ),
-    );
-  }
-}
-
-class _EmptyRecommendationCard extends StatelessWidget {
-  final VoidCallback onOpenTasks;
-  final VoidCallback onOpenAdvice;
-  final Color primaryText;
-  final Color secondaryText;
-  final Color accentColor;
-
-  const _EmptyRecommendationCard({
-    required this.onOpenTasks,
-    required this.onOpenAdvice,
-    this.primaryText = Colors.white,
-    this.secondaryText = Colors.white70,
-    this.accentColor = Colors.white,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: accentColor.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: accentColor.withValues(alpha: 0.16)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '下一個最值得做',
-            style: TextStyle(
-              color: secondaryText,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            '今天沒有待完成任務',
-            style: TextStyle(
-              color: primaryText,
-              fontSize: 15,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '可以新增一個小目標，或先看看今日建議。',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: secondaryText, fontSize: 12, height: 1.45),
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _SmallHeroTextButton(
-                label: '新增任務',
-                color: accentColor,
-                onPressed: onOpenTasks,
-              ),
-              _SmallHeroTextButton(
-                label: '查看建議',
-                color: accentColor,
-                onPressed: onOpenAdvice,
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SmallHeroTextButton extends StatelessWidget {
-  final String label;
-  final Color color;
-  final VoidCallback onPressed;
-
-  const _SmallHeroTextButton({
-    required this.label,
-    required this.color,
-    required this.onPressed,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return TextButton(
-      onPressed: onPressed,
-      style: TextButton.styleFrom(
-        foregroundColor: color,
-        backgroundColor: color.withValues(alpha: 0.10),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
-      ),
-      child: Text(
-        label,
-        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
-      ),
-    );
-  }
-}
-
-class _RecommendedTaskCard extends StatelessWidget {
-  final TaskModel task;
-  final int potentialScore;
-  final String reason;
-  final Color accentColor;
-  final Color primaryText;
-  final Color secondaryText;
-  final bool onGradient;
   final VoidCallback onTap;
 
-  const _RecommendedTaskCard({
-    required this.task,
-    required this.potentialScore,
-    required this.reason,
-    required this.accentColor,
-    required this.primaryText,
-    required this.secondaryText,
-    this.onGradient = false,
+  const _ActionCenterCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.color,
     required this.onTap,
   });
 
-  IconData get _icon {
-    switch (task.sourceType) {
-      case TaskSourceType.sleepHours:
-        return Icons.bedtime_outlined;
-      case TaskSourceType.steps:
-        return Icons.directions_walk;
-      case TaskSourceType.exerciseMinutes:
-        return Icons.fitness_center;
-      case TaskSourceType.focusMinutes:
-        return Icons.timer_outlined;
-      case TaskSourceType.studyRoom:
-      case TaskSourceType.system:
-        return Icons.groups_2_outlined;
-      case TaskSourceType.manual:
-      case null:
-        return task.taskType == TaskType.deadline
-            ? Icons.event_available_outlined
-            : Icons.task_alt_outlined;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final cardColor = onGradient
-        ? Colors.white.withValues(alpha: 0.14)
-        : Theme.of(context).cardColor;
-    final borderColor = onGradient
-        ? Colors.white.withValues(alpha: 0.16)
-        : Colors.transparent;
-    final iconBackground = onGradient
-        ? BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.16),
-            borderRadius: BorderRadius.circular(16),
-          )
-        : AppUI.softCardOf(context, accentColor);
+    final primaryText = AppUI.textPrimaryOf(context);
+    final secondaryText = AppUI.textSecondaryOf(context);
 
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(22),
         onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
         child: Ink(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.all(13),
           decoration: BoxDecoration(
-            color: cardColor,
+            color: color.withValues(alpha: AppUI.isDark(context) ? 0.16 : 0.08),
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: borderColor),
-            boxShadow: onGradient
-                ? null
-                : [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.035),
-                      blurRadius: 18,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
+            border: Border.all(color: color.withValues(alpha: 0.20)),
           ),
           child: Row(
             children: [
               Container(
-                width: 42,
-                height: 42,
-                decoration: iconBackground,
-                child: Icon(_icon, color: accentColor, size: 22),
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(icon, color: Colors.white, size: 21),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -910,46 +794,30 @@ class _RecommendedTaskCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '下一個最值得做',
-                      style: TextStyle(
-                        color: secondaryText,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      task.title,
+                      title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: primaryText,
                         fontSize: 15,
-                        fontWeight: FontWeight.bold,
+                        fontWeight: FontWeight.w900,
                       ),
                     ),
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 5,
-                      children: [
-                        _MiniInfoPill(
-                          text: reason,
-                          color: const Color(0xFF2563EB),
-                          onGradient: onGradient,
-                        ),
-                        _MiniInfoPill(
-                          text: '約 $potentialScore 分',
-                          color: const Color(0xFF10B981),
-                          onGradient: onGradient,
-                        ),
-                      ],
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: secondaryText,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ],
                 ),
               ),
-              const SizedBox(width: 6),
-              Icon(Icons.chevron_right, color: secondaryText),
+              Icon(Icons.chevron_right_rounded, color: color, size: 22),
             ],
           ),
         ),
@@ -958,35 +826,115 @@ class _RecommendedTaskCard extends StatelessWidget {
   }
 }
 
-class _MiniInfoPill extends StatelessWidget {
-  final String text;
+class _PrimaryTaskButton extends StatelessWidget {
+  final int completedCount;
+  final int totalTasks;
   final Color color;
-  final bool onGradient;
+  final Color primaryText;
+  final Color secondaryText;
+  final VoidCallback onPressed;
 
-  const _MiniInfoPill({
-    required this.text,
+  const _PrimaryTaskButton({
+    required this.completedCount,
+    required this.totalTasks,
     required this.color,
-    this.onGradient = false,
+    required this.primaryText,
+    required this.secondaryText,
+    required this.onPressed,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-      decoration: onGradient
-          ? BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.14),
-              borderRadius: BorderRadius.circular(AppUI.radiusPill),
-            )
-          : AppUI.softCardOf(context, color),
-      child: Text(
-        text,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          color: onGradient ? Colors.white : color,
-          fontSize: 11,
-          fontWeight: FontWeight.w800,
+    final progress = totalTasks == 0
+        ? 0.0
+        : (completedCount / totalTasks).clamp(0.0, 1.0);
+    final title = totalTasks == 0 ? '建立今日任務' : '整理今日任務';
+    final subtitle = totalTasks == 0
+        ? '先放進一個明確目標，今天就有主線可以推進。'
+        : '已完成 $completedCount / $totalTasks，點進去安排下一個行動。';
+
+    return Material(
+      color: color.withValues(alpha: AppUI.isDark(context) ? 0.18 : 0.10),
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(18),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: color.withValues(alpha: 0.24)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [
+                    BoxShadow(
+                      color: color.withValues(alpha: 0.24),
+                      blurRadius: 16,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.assignment_turned_in_outlined,
+                  color: Colors.white,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: primaryText,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: secondaryText,
+                        fontSize: 12,
+                        height: 1.35,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (totalTasks > 0) ...[
+                      const SizedBox(height: 9),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(AppUI.radiusPill),
+                        child: LinearProgressIndicator(
+                          value: progress,
+                          minHeight: 6,
+                          backgroundColor: AppUI.isDark(context)
+                              ? const Color(0xFF2A2F3A)
+                              : Colors.white.withValues(alpha: 0.82),
+                          valueColor: AlwaysStoppedAnimation<Color>(color),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(Icons.arrow_forward_rounded, color: color, size: 22),
+            ],
+          ),
         ),
       ),
     );
@@ -1071,6 +1019,58 @@ class _QuickActionCard extends StatelessWidget {
   }
 }
 
+class _PlanetPill extends StatelessWidget {
+  final int planetCount;
+  final Color accentColor;
+  final VoidCallback onTap;
+
+  const _PlanetPill({
+    required this.planetCount,
+    required this.accentColor,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: onTap,
+        child: Ink(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: accentColor.withValues(
+              alpha: AppUI.isDark(context) ? 0.18 : 0.12,
+            ),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: accentColor.withValues(alpha: 0.28)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.language,
+                color: accentColor,
+                size: 17,
+              ),
+              const SizedBox(width: 5),
+              Text(
+                '$planetCount',
+                style: TextStyle(
+                  color: AppUI.textPrimaryOf(context),
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _CoinPill extends StatelessWidget {
   final int coins;
   final Color accentColor;
@@ -1134,6 +1134,735 @@ class _SectionTitle extends StatelessWidget {
     return Text(
       title,
       style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color),
+    );
+  }
+}
+
+// ─── 角色模式與親屬/團體連結限制卡 ──────────────────────────────────────────
+
+class _BindingGatedCard extends StatefulWidget {
+  final AppState appState;
+  final Color accentColor;
+  final String role; // 'guardian' or 'personal'
+
+  const _BindingGatedCard({
+    required this.appState,
+    required this.accentColor,
+    required this.role,
+  });
+
+  @override
+  State<_BindingGatedCard> createState() => _BindingGatedCardState();
+}
+
+class _BindingGatedCardState extends State<_BindingGatedCard> {
+  final TextEditingController _idController = TextEditingController();
+  bool _submitting = false;
+
+  @override
+  void dispose() {
+    _idController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isGuardian = widget.role == 'guardian';
+    final primaryText = AppUI.textPrimaryOf(context);
+    final secondaryText = AppUI.textSecondaryOf(context);
+    final incomingReqs = widget.appState.incomingGuardianRequests;
+    final outgoingReqs = widget.appState.outgoingGuardianRequests;
+
+    return Card(
+      shape: AppUI.cardShape(),
+      elevation: 4,
+      child: Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  isGuardian ? Icons.shield_outlined : Icons.child_care_rounded,
+                  color: widget.accentColor,
+                  size: 28,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  isGuardian ? '家長陪伴中心限制' : '開啟家長陪伴連結',
+                  style: TextStyle(
+                    color: primaryText,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              isGuardian
+                  ? '為了使用孩子專注、睡眠與健康數據牆，請與孩子帳號進行親屬綁定。請在下方輸入您孩子的 Nudge ID 發送申請，或同意對方的申請：'
+                  : '您可以與家長進行帳號連結，共同建立自律目標並接收溫暖的鼓勵卡！請在下方輸入您家長的 Nudge ID 發送申請，或同意對方的申請：',
+              style: TextStyle(color: secondaryText, fontSize: 13, height: 1.45),
+            ),
+            if (incomingReqs.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(
+                '收到待處理的綁定申請：',
+                style: TextStyle(color: primaryText, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              const SizedBox(height: 8),
+              ...incomingReqs.map((req) {
+                final reqId = req['id'] as String;
+                final nickname = req['senderNickname'] as String? ?? '使用者';
+                final nudgeId = req['senderNudgeId'] as String? ?? '';
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: widget.accentColor.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: widget.accentColor.withValues(alpha: 0.15)),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '$nickname ($nudgeId)',
+                          style: TextStyle(color: primaryText, fontSize: 13),
+                        ),
+                      ),
+                      ElevatedButton(
+                        onPressed: () async {
+                          final messenger = ScaffoldMessenger.of(context);
+                          try {
+                            await widget.appState.approveGuardianRequest(reqId);
+                            messenger.showSnackBar(const SnackBar(content: Text('已成功同意並建立親屬綁定！ 🎉')));
+                          } catch (e) {
+                            messenger.showSnackBar(SnackBar(content: Text('同意失敗: $e')));
+                          }
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text('同意', style: TextStyle(fontSize: 11)),
+                      ),
+                      const SizedBox(width: 6),
+                      OutlinedButton(
+                        onPressed: () async {
+                          final messenger = ScaffoldMessenger.of(context);
+                          try {
+                            await widget.appState.declineGuardianRequest(reqId);
+                            messenger.showSnackBar(const SnackBar(content: Text('已拒絕該申請')));
+                          } catch (e) {
+                            messenger.showSnackBar(SnackBar(content: Text('拒絕失敗: $e')));
+                          }
+                        },
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.redAccent,
+                          side: const BorderSide(color: Colors.redAccent),
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text('拒絕', style: TextStyle(fontSize: 11)),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
+            if (outgoingReqs.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              ...outgoingReqs.map((req) {
+                final reqId = req['id'] as String;
+                final nudgeId = req['receiverNudgeId'] as String? ?? '';
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.hourglass_empty_rounded, size: 16, color: Colors.orange),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '已向 $nudgeId 送出申請，等待同意中...',
+                          style: TextStyle(color: secondaryText, fontSize: 13),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () async {
+                          final messenger = ScaffoldMessenger.of(context);
+                          try {
+                            await widget.appState.declineGuardianRequest(reqId);
+                            messenger.showSnackBar(const SnackBar(content: Text('已撤回綁定申請')));
+                          } catch (e) {
+                            messenger.showSnackBar(SnackBar(content: Text('撤回失敗: $e')));
+                          }
+                        },
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.redAccent,
+                          padding: EdgeInsets.zero,
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text('撤回', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ] else ...[
+              const SizedBox(height: 16),
+              TextField(
+                controller: _idController,
+                decoration: InputDecoration(
+                  hintText: isGuardian ? '輸入孩子的 Nudge ID' : '輸入家長的 Nudge ID',
+                  prefixIcon: const Icon(Icons.link),
+                ),
+              ),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _submitting
+                      ? null
+                      : () async {
+                          final id = _idController.text.trim();
+                          if (id.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('請輸入有效的 ID')),
+                            );
+                            return;
+                          }
+                          final messenger = ScaffoldMessenger.of(context);
+                          setState(() => _submitting = true);
+                          try {
+                            await widget.appState.sendGuardianRequest(id);
+                            _idController.clear();
+                            messenger.showSnackBar(
+                              SnackBar(content: Text('已成功發送綁定申請至 $id！ 🚀')),
+                            );
+                          } catch (e) {
+                            messenger.showSnackBar(
+                              SnackBar(content: Text('申請失敗: ${e.toString().replaceAll('Exception: ', '')}')),
+                            );
+                          } finally {
+                            setState(() => _submitting = false);
+                          }
+                        },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: widget.accentColor,
+                    foregroundColor: Colors.white,
+                  ),
+                  child: _submitting
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : Text(isGuardian ? '送出綁定申請' : '送出綁定申請'),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GroupBindingGatedCard extends StatefulWidget {
+  final AppState appState;
+  final Color accentColor;
+
+  const _GroupBindingGatedCard({
+    required this.appState,
+    required this.accentColor,
+  });
+
+  @override
+  State<_GroupBindingGatedCard> createState() => _GroupBindingGatedCardState();
+}
+
+class _GroupBindingGatedCardState extends State<_GroupBindingGatedCard> {
+  final TextEditingController _idController = TextEditingController();
+  bool _isJoining = false;
+
+  @override
+  void dispose() {
+    _idController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final primaryText = AppUI.textPrimaryOf(context);
+    final secondaryText = AppUI.textSecondaryOf(context);
+
+    return Card(
+      shape: AppUI.cardShape(),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.group_add_outlined, color: AppUI.blue, size: 28),
+                const SizedBox(width: 8),
+                Text(
+                  '加入團體組織 (學員模式)',
+                  style: TextStyle(
+                    color: primaryText,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              '請輸入您班主任、企業管理者或老師提供的團體組織 ID，即可同步挑戰任務與共讀日程。',
+              style: TextStyle(color: secondaryText, fontSize: 12, height: 1.45),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _idController,
+              decoration: const InputDecoration(
+                hintText: '輸入團體組織 ID (格式如: GRP-88921)',
+                prefixIcon: Icon(Icons.vpn_key),
+              ),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: _isJoining
+                    ? null
+                    : () async {
+                        final id = _idController.text.trim();
+                        if (id.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('請輸入團體組織 ID')),
+                          );
+                          return;
+                        }
+                        final messenger = ScaffoldMessenger.of(context);
+                        setState(() => _isJoining = true);
+                        try {
+                          await widget.appState.joinGroup(id);
+                          messenger.showSnackBar(
+                            SnackBar(content: Text('成功加入團體 ID：$id！ 🎯')),
+                          );
+                        } catch (e) {
+                          messenger.showSnackBar(
+                            SnackBar(content: Text('加入失敗: $e')),
+                          );
+                        } finally {
+                          setState(() => _isJoining = false);
+                        }
+                      },
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: widget.accentColor,
+                  side: BorderSide(color: widget.accentColor),
+                ),
+                child: const Text('輸入 ID 連結並加入'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── 孩子模式專屬控制台 ───────────────────────────────────────────────────
+
+class _ChildHeroDashboardCard extends StatelessWidget {
+  final AppState appState;
+  final Color accentColor;
+
+  const _ChildHeroDashboardCard({
+    required this.appState,
+    required this.accentColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final invite = appState.guardianInvite;
+    final goal = invite?['goal'] ?? '一週睡滿 49 小時';
+    final primaryText = AppUI.textPrimaryOf(context);
+    final secondaryText = AppUI.textSecondaryOf(context);
+
+    final latestEncouragement = appState.guardianEncouragements.isNotEmpty
+        ? appState.guardianEncouragements.first
+        : null;
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            const Color(0xFF10B981).withValues(alpha: 0.12),
+            accentColor.withValues(alpha: 0.05),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(AppUI.radiusLarge),
+        border: Border.all(color: accentColor.withValues(alpha: 0.20)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.family_restroom_rounded, color: Color(0xFF10B981), size: 14),
+                    SizedBox(width: 4),
+                    Text(
+                      '家長陪伴模式已連結',
+                      style: TextStyle(
+                        color: Color(0xFF10B981),
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.favorite_rounded, color: Colors.pink, size: 20),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text(
+            '與家長的共同目標：',
+            style: TextStyle(color: secondaryText, fontSize: 12),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            goal,
+            style: TextStyle(
+              color: primaryText,
+              fontSize: 20,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('共同進度: 71%', style: TextStyle(color: secondaryText, fontSize: 11)),
+                  Text('剩下 4 天', style: TextStyle(color: accentColor, fontSize: 11, fontWeight: FontWeight.bold)),
+                ],
+              ),
+              const SizedBox(height: 6),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: LinearProgressIndicator(
+                  value: 0.71,
+                  minHeight: 8,
+                  backgroundColor: AppUI.isDark(context) ? const Color(0xFF2A2F3A) : const Color(0xFFE5E7EB),
+                  valueColor: AlwaysStoppedAnimation<Color>(accentColor),
+                ),
+              ),
+            ],
+          ),
+          if (latestEncouragement != null) ...[
+            const Divider(height: 18),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).cardColor,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Theme.of(context).dividerColor),
+              ),
+              child: Row(
+                children: [
+                  const Text('💌', style: TextStyle(fontSize: 22)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          latestEncouragement['title'] ?? '收到鼓勵',
+                          style: TextStyle(
+                            color: primaryText,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          latestEncouragement['message'] ?? '',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: secondaryText, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.chevron_right_rounded, color: secondaryText, size: 18),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// ─── 家長模式專屬控制台 ───────────────────────────────────────────────────
+
+class _GuardianHeroDashboardCard extends StatelessWidget {
+  final AppState appState;
+  final Color accentColor;
+
+  const _GuardianHeroDashboardCard({
+    required this.appState,
+    required this.accentColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final childSleep = appState.sleepHours > 0 ? appState.sleepHours : 6.8;
+    final childFocus = appState.focusMinutes > 0 ? appState.focusMinutes : 45;
+    final childSteps = appState.steps > 0 ? appState.steps : 6250;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            accentColor.withValues(alpha: 0.95),
+            Color.lerp(accentColor, const Color(0xFFFB923C), 0.5) ?? accentColor,
+            const Color(0xFFC2410C).withValues(alpha: 0.96),
+          ],
+          stops: const [0, 0.6, 1],
+        ),
+        borderRadius: BorderRadius.circular(AppUI.radiusLarge),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.20)),
+        boxShadow: [
+          BoxShadow(
+            color: accentColor.withValues(alpha: 0.24),
+            blurRadius: 28,
+            offset: const Offset(0, 14),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _DashboardPill(
+            icon: Icons.shield_outlined,
+            label: '家長陪伴看板 (監管孩子中)',
+            color: Colors.white,
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            '孩子的今日自律狀況：',
+            style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 14),
+          GridView.count(
+            crossAxisCount: 2,
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            childAspectRatio: 2.55,
+            children: [
+              _DashboardMetricCard(
+                icon: Icons.task_alt_outlined,
+                label: '孩子任務',
+                value: '4/6 已完成',
+                color: const Color(0xFF34D399),
+              ),
+              _DashboardMetricCard(
+                icon: Icons.timer_outlined,
+                label: '孩子專注',
+                value: '$childFocus 分鐘',
+                color: const Color(0xFF93C5FD),
+              ),
+              _DashboardMetricCard(
+                icon: Icons.bedtime_outlined,
+                label: '孩子睡眠',
+                value: '${childSleep.toStringAsFixed(1)} 小時',
+                color: const Color(0xFFC4B5FD),
+              ),
+              _DashboardMetricCard(
+                icon: Icons.directions_walk,
+                label: '孩子步數',
+                value: '$childSteps 步',
+                color: const Color(0xFF6EE7B7),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── 團體/班級模式專屬控制台 ──────────────────────────────────────────────
+
+class _GroupHeroDashboardCard extends StatelessWidget {
+  final AppState appState;
+  final Color accentColor;
+
+  const _GroupHeroDashboardCard({
+    required this.appState,
+    required this.accentColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final primaryText = AppUI.textPrimaryOf(context);
+    final secondaryText = AppUI.textSecondaryOf(context);
+    final isOwner = appState.isGroupOwner;
+    final groupName = appState.groupName ?? '自律小組';
+    final groupId = appState.groupId ?? 'GRP-XXXX';
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            accentColor.withValues(alpha: 0.12),
+            const Color(0xFF14B8A6).withValues(alpha: 0.05),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(AppUI.radiusLarge),
+        border: Border.all(color: accentColor.withValues(alpha: 0.20)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: accentColor.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: accentColor.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      isOwner ? Icons.admin_panel_settings_outlined : Icons.group_work_outlined,
+                      color: accentColor,
+                      size: 14,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      isOwner ? '團體建立者 (房主)' : '團體成員',
+                      style: TextStyle(
+                        color: accentColor,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Text(
+                'ID: $groupId',
+                style: TextStyle(color: secondaryText, fontSize: 11, fontFamily: 'monospace'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text(
+            '當前關聯之團體：',
+            style: TextStyle(color: secondaryText, fontSize: 12),
+          ),
+          const SizedBox(height: 4),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                groupName,
+                style: TextStyle(
+                  color: primaryText,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              IconButton(
+                onPressed: () {
+                  showDialog(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: Text(isOwner ? '解散團體' : '退出團體'),
+                      content: Text('確定要${isOwner ? '解散' : '退出'}當前團體【$groupName】嗎？'),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+                        TextButton(
+                          onPressed: () async {
+                            final navigator = Navigator.of(ctx);
+                            final messenger = ScaffoldMessenger.of(context);
+                            await appState.leaveGroup();
+                            navigator.pop();
+                            messenger.showSnackBar(
+                              const SnackBar(content: Text('已退出當前團體')),
+                            );
+                          },
+                          child: const Text('確定', style: TextStyle(color: Colors.redAccent)),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.exit_to_app_rounded, size: 20),
+                tooltip: '退出此團體',
+              ),
+            ],
+          ),
+          const Divider(height: 24),
+          Row(
+            children: [
+              const Icon(Icons.emoji_events_outlined, color: AppUI.orange, size: 18),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  '進行中挑戰：7日早起挑戰 (已啟動)',
+                  style: TextStyle(color: primaryText, fontSize: 13, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

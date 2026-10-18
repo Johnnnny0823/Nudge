@@ -1,18 +1,30 @@
-const $ = (selector, root = document) => root.querySelector(selector);
+﻿const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
 const modules = [
-  ["home", "總覽入口", "index.html"],
+  ["home", "總覽入口", "dashboard.html"],
   ["personal", "個人進階分析", "personal.html"],
   ["guardian", "家長陪伴中心", "guardian.html"],
   ["groups", "團體 / 教育管理", "groups.html"],
-  ["operations", "營運後台", "operations.html"],
-  ["research", "研究 / 展示中心", "research.html"],
-  ["planet", "自律城市 / 星球", "planet.html"],
+  ["operations", "商城頁", "operations.html"],
+  ["research", "研究中心", "research.html"],
+  ["friend", "好友功能", "friend.html"],
+  ["planet", "自律星球", "planet.html"],
   ["presentation", "專題發表流程", "presentation.html"],
+  ["profile", "個人名片", "profile.html"],
+  ["notifications", "通知與邀請", "notifications.html"],
 ];
 
+// Authentication Check
+const pathName = window.location.pathname;
+const isPublicPage = pathName.endsWith("/") || pathName.endsWith("index.html") || pathName.endsWith("dashboard.html") || pathName.endsWith("login.html") || pathName.includes("admin_dashboard.html");
+if (!isPublicPage && localStorage.getItem("nudgeWebLoggedIn") !== "true") {
+  localStorage.setItem("nudgePostLoginRedirect", pathName.split("/").pop() || "dashboard.html");
+}
+
+
 function injectModuleMenu() {
+  if (window.location.pathname.includes('admin_dashboard.html')) return;
   const sidebar = $(".sidebar");
   if (!sidebar) return;
   
@@ -27,7 +39,7 @@ function injectModuleMenu() {
       activeKey = key;
     }
   }
-  if (path.endsWith("/") || path.includes("index.html")) {
+  if (path.includes("dashboard.html")) {
     activeKey = "home";
   }
 
@@ -35,6 +47,40 @@ function injectModuleMenu() {
   nav.innerHTML = modules
     .map(([key, label, href]) => `<a href="${href}" class="${key === activeKey ? 'active' : ''}">${label}</a>`)
     .join("");
+
+  // 登出按鈕邏輯：如果目前是登入狀態，就在選單最後面加入「登出」按鈕
+  if (localStorage.getItem("nudgeWebLoggedIn") === "true") {
+    const logoutBtn = document.createElement("a");
+    logoutBtn.href = "#";
+    logoutBtn.style.marginTop = "16px";
+    logoutBtn.style.color = "var(--red)"; // 使用現有的紅色彩色變數
+    logoutBtn.textContent = "登出帳號";
+    logoutBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      localStorage.removeItem("nudgeWebLoggedIn");
+      localStorage.removeItem("nudgeActiveDemoUserId");
+      
+      if (typeof firebase !== 'undefined' && firebase.auth) {
+        firebase.auth().signOut().then(() => {
+          window.location.href = "dashboard.html"; // 登出後回到總覽頁面
+        }).catch(err => {
+          console.error("Firebase sign out failed:", err);
+          window.location.href = "dashboard.html";
+        });
+      } else {
+        window.location.href = "dashboard.html";
+      }
+    });
+    nav.appendChild(logoutBtn);
+  } else {
+    // 若未登入，也可選擇顯示「登入」按鈕
+    const loginBtn = document.createElement("a");
+    loginBtn.href = "login.html";
+    loginBtn.style.marginTop = "16px";
+    loginBtn.style.color = "var(--page-accent)";
+    loginBtn.textContent = "登入 / 註冊";
+    nav.appendChild(loginBtn);
+  }
 
   // Remove the old drop-down module switcher if it exists
   const switcher = $(".module-switcher");
@@ -77,6 +123,10 @@ function animateCounters() {
   $$("[data-count]").forEach((node) => {
     const target = Number(node.dataset.count || 0);
     const suffix = node.dataset.suffix || "";
+    if (node.dataset.animateCount !== "true") {
+      node.textContent = `${target}${suffix}`;
+      return;
+    }
     const duration = 900;
     const start = performance.now();
     const tick = (now) => {
@@ -301,22 +351,12 @@ function bindPlanet() {
       const view = button.dataset.view;
       if (view === 'solar-system') {
         if (solarView) solarView.style.display = 'block';
-        if (cityView) cityView.style.display = 'none';
         if (hudDesc) hudDesc.textContent = "任務完成會即時點亮星星與軌道";
         if (hudTitle) hudTitle.textContent = "COSMIC EVOLUTION";
         if (planetHud) planetHud.textContent = "太陽系";
         if (navSolar) navSolar.textContent = "太陽系";
         if (navGalaxy) navGalaxy.textContent = "銀河系";
         if (navUniverse) navUniverse.textContent = "宇宙";
-      } else {
-        if (solarView) solarView.style.display = 'none';
-        if (cityView) cityView.style.display = 'block';
-        if (hudDesc) hudDesc.textContent = "任務完成會即時點亮城市區域";
-        if (hudTitle) hudTitle.textContent = "CITY EVOLUTION";
-        if (planetHud) planetHud.textContent = "地球";
-        if (navSolar) navSolar.textContent = "鄉村";
-        if (navGalaxy) navGalaxy.textContent = "小鎮";
-        if (navUniverse) navUniverse.textContent = "都市";
       }
     });
   });
@@ -329,6 +369,21 @@ function saveDemoState(key, payload) {
     updatedAt: new Date().toISOString(),
   };
   localStorage.setItem("nudgeWebTools", JSON.stringify(current));
+  
+  // Sync to Firestore if user logged in
+  const activeUserId = localStorage.getItem("nudgeActiveDemoUserId");
+  if (activeUserId && typeof db !== 'undefined' && db) {
+    db.collection("users").doc(activeUserId).update({
+      [`webToolsState.${key}`]: current[key]
+    }).catch(e => console.warn("Firestore update error:", e));
+
+    // Guardian mode: write to child's document too
+    if (window.linkedChildUid) {
+      db.collection("users").doc(window.linkedChildUid).update({
+        [`webToolsState.${key}`]: current[key]
+      }).catch(e => console.warn("Child Firestore update error:", e));
+    }
+  }
 }
 
 function downloadTextFile(filename, text) {
@@ -367,16 +422,16 @@ function bindExtensionTools() {
     const effort = $('[data-template-effort]', templateTool).value;
     const pressure = $('[data-template-pressure]', templateTool).value;
     const phase = pressure === "截止日前" ? "先拆交付物、再安排檢查日" : "前段建立節奏，中段執行，最後回顧調整";
-    templateText = `${type} ${days} 日任務模板\n每日投入：${effort}\n策略：${phase}\n\nDay 1：整理目標與資料\nDay ${Math.ceil(days / 2)}：完成主要進度\nDay ${days}：回顧、補強與提交`;
+    templateText = `${type} ${days} 日任務規劃\n每日投入：${effort}\n策略：${phase}\n\nDay 1：整理目標與資料\nDay ${Math.ceil(days / 2)}：完成主要進度\nDay ${days}：回顧、補強與提交`;
     setOutput(
       templateTool,
       `<strong>${type} ${days} 日模板</strong><p>每日 ${effort}，${phase}。已產生可匯入 App 的分段任務草稿。</p>`,
     );
     saveDemoState("template", { type, days, effort, pressure });
-    toast("已產生任務模板");
+    toast("已產生任務規劃");
   });
   templateTool?.querySelector('[data-action="download-template"]')?.addEventListener("click", () => {
-    downloadTextFile("nudge-task-template.txt", templateText || "請先產生任務模板。");
+    downloadTextFile("nudge-task-template.txt", templateText || "請先產生任務規劃。");
   });
 
   guardianTool?.querySelector('[data-action="preview-guardian"]')?.addEventListener("click", () => {
@@ -495,6 +550,7 @@ function bindExtensionTools() {
       `)
       .join("");
   };
+  window.renderSavedList = renderSavedList;
 
   // Delegate delete events globally
   document.body.addEventListener("click", (e) => {
@@ -521,6 +577,23 @@ function bindExtensionTools() {
     current[key] = items;
     current[`${key}UpdatedAt`] = new Date().toISOString();
     localStorage.setItem("nudgeWebTools", JSON.stringify(current));
+    
+    // Sync to Firestore if user logged in
+    const activeUserId = localStorage.getItem("nudgeActiveDemoUserId");
+    if (activeUserId && typeof db !== 'undefined' && db) {
+      db.collection("users").doc(activeUserId).update({
+        [`webToolsCollection.${key}`]: items,
+        [`webToolsCollection.${key}UpdatedAt`]: current[`${key}UpdatedAt`]
+      }).catch(e => console.warn("Firestore update error:", e));
+
+      // Guardian mode: write to child's document too
+      if (window.linkedChildUid) {
+        db.collection("users").doc(window.linkedChildUid).update({
+          [`webToolsCollection.${key}`]: items,
+          [`webToolsCollection.${key}UpdatedAt`]: current[`${key}UpdatedAt`]
+        }).catch(e => console.warn("Child Firestore update error:", e));
+      }
+    }
   };
   
   renderSavedList("[data-capsule-list]", "capsules", "<article><strong>尚未保存</strong><span>建立第一個時間膠囊後會出現在這裡。</span></article>");
@@ -727,10 +800,10 @@ const demoSlides = [
   {
     title: "自律星球亮點",
     script:
-      "最後用自律城市或自律星球把整個系統收起來：專注任務蓋圖書館、健康任務蓋公園、睡眠點亮住宅區、自律房出現朋友角色。這讓抽象分數變成看得見的世界。",
+      "最後用自律星球把整個系統收起來：專注任務蓋圖書館、健康任務蓋公園、睡眠點亮住宅區、自律房出現朋友角色。這讓抽象分數變成看得見的世界。",
     items: [
       ["可視化成果", "任務成果變成建築與星球成長。"],
-      ["社交展示", "朋友角色可以拜訪城市或共同建設星球。"],
+      ["社交展示", "朋友角色可以共同建設星球。"],
       ["發表亮點", "老師能一眼理解遊戲化與資料整合價值。"],
     ],
   },
@@ -778,21 +851,14 @@ function injectAINavigator() {
   container.innerHTML = `
     <div class="ai-chat-panel" id="aiChatPanel">
       <div class="ai-chat-header">
-        <div class="ai-header-title">艦載 AI 導航助手</div>
+        <div class="ai-header-title">Nudge 智慧助理</div>
         <div>
-          <button class="ai-close-btn" id="aiSettingsBtn" title="設定API Key" style="margin-right: 8px;">⚙️</button>
           <button class="ai-close-btn" id="aiCloseBtn">✕</button>
         </div>
       </div>
-      
-      <div class="ai-settings-panel" id="aiSettingsPanel" style="display: none; padding: 16px; background: rgba(0, 240, 255, 0.05); border-bottom: 1px solid rgba(0, 240, 255, 0.2);">
-        <label style="color: #00f0ff; font-size: 12px; display: block; margin-bottom: 8px;">設定 Gemini API Key</label>
-        <input type="password" id="aiApiKeyInput" placeholder="輸入 API Key..." style="width: 100%; background: rgba(3, 5, 10, 0.6); border: 1px solid rgba(0, 240, 255, 0.3); border-radius: 6px; padding: 6px 10px; color: #fff; outline: none; margin-bottom: 8px; box-sizing: border-box;" />
-        <button id="aiSaveKeyBtn" style="background: #00f0ff; color: #03050a; border: none; border-radius: 6px; padding: 4px 12px; font-weight: 700; cursor: pointer; font-size: 12px;">儲存</button>
-      </div>
 
       <div class="ai-chat-body" id="aiChatBody">
-        <div class="ai-msg">您好！艦長。請在上方齒輪設定您的 Gemini API Key，即可與真實星艦主機連線。</div>
+        <div class="ai-msg">你好，我可以協助整理頁面重點、說明資料狀態，或建議下一步自律行動。</div>
       </div>
       <div class="ai-chat-input">
         <input type="text" placeholder="輸入指令..." id="aiInput" />
@@ -808,27 +874,9 @@ function injectAINavigator() {
   const orb = $("#aiOrb", container);
   const panel = $("#aiChatPanel", container);
   const closeBtn = $("#aiCloseBtn", container);
-  const settingsBtn = $("#aiSettingsBtn", container);
-  const settingsPanel = $("#aiSettingsPanel", container);
-  const apiKeyInput = $("#aiApiKeyInput", container);
-  const saveKeyBtn = $("#aiSaveKeyBtn", container);
   const input = $("#aiInput", container);
   const send = $("#aiSend", container);
   const body = $("#aiChatBody", container);
-
-  const savedKey = localStorage.getItem("gemini_api_key");
-  if (savedKey) apiKeyInput.value = savedKey;
-
-  settingsBtn.addEventListener("click", () => {
-    settingsPanel.style.display = settingsPanel.style.display === "none" ? "block" : "none";
-  });
-
-  saveKeyBtn.addEventListener("click", () => {
-    localStorage.setItem("gemini_api_key", apiKeyInput.value.trim());
-    settingsPanel.style.display = "none";
-    body.innerHTML += `<div class="ai-msg">API 金鑰已儲存。系統已重新啟動。</div>`;
-    body.scrollTop = body.scrollHeight;
-  });
 
   orb.addEventListener("click", () => {
     panel.classList.toggle("open");
@@ -841,13 +889,6 @@ function injectAINavigator() {
   const sendMsg = async () => {
     const text = input.value.trim();
     if (!text) return;
-    
-    const apiKey = localStorage.getItem("gemini_api_key");
-    if (!apiKey) {
-      body.innerHTML += `<div class="ai-msg">警告：尚未偵測到核心金鑰。請點擊上方齒輪圖示輸入 Gemini API Key。</div>`;
-      body.scrollTop = body.scrollHeight;
-      return;
-    }
 
     body.innerHTML += `<div class="ai-msg user">${text}</div>`;
     input.value = "";
@@ -857,13 +898,34 @@ function injectAINavigator() {
     body.innerHTML += `<div class="ai-msg" id="${loadingId}">[ 系統讀取中... 與中樞神經連線中 ]</div>`;
     body.scrollTop = body.scrollHeight;
 
+    const tasksContext = (currentUserTasks && currentUserTasks.length > 0)
+      ? `目前使用者的自律任務列表如下：\n` + currentUserTasks.map(t => `- 任務名稱: "${t.title}" (ID: ${t.id}, 狀態: ${t.isDone || t.done ? '已完成' : '未完成'})`).join('\n')
+      : `目前無活躍任務。`;
+
+    const summariesContext = (currentUserDailySummaries && currentUserDailySummaries.length > 0)
+      ? `近期每日自律數據摘要如下：\n` + currentUserDailySummaries.slice(-5).map(s => `- 日期: ${s.date}, 步數: ${s.steps}, 睡眠: ${s.sleepHours}小時, 專注: ${s.focusMinutes}分鐘, 完成任務: ${s.completedTasks}/${s.totalTasks}`).join('\n')
+      : `無近期數據。`;
+
+    const systemText = `你是一個名為 Nudge 的智慧助理，同時也是溫和且專業的「Nudge 自律導師」。你負責協助使用者理解目前頁面、整理自律資料，並提供下一步時間管理與自律任務建議。回答要簡潔、有操作性，不要給出落落長的文章。
+如果使用者要求開始專注、倒數計時，請加上：[ACTION:START_FOCUS:分鐘數]
+如果使用者要求新增任務，請加上：[ACTION:ADD_TASK:任務名稱]
+如果使用者要求前往某個頁面(例如總覽、家長中心、營運後台等)，請加上：[ACTION:NAVIGATE:該頁面網址.html] (頁面包含: dashboard.html, personal.html, guardian.html, groups.html, operations.html, planet.html, friend.html)。
+如果使用者說他完成了某個任務，或者要求你幫他完成（例如「我完成了準備期中報告的任務」、「我剛剛去跑步了」，或者「幫我完成看書任務」），請在回覆中包含：[ACTION:COMPLETE_TASK:任務ID]。請務必使用對應任務的 ID。
+
+${tasksContext}
+
+${summariesContext}
+
+如果使用者問你怎麼用，請以繁體中文簡要介紹：左側是導航面板，中間是數據儀表板，下方是專屬星球，每天完成任務可以發射衛星環繞星球，右下角可以點擊小球召喚我為您導航。`;
+
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+      const apiHost = window.location.protocol === 'file:' ? 'http://127.0.0.1:5001' : '';
+      const response = await fetch(`${apiHost}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           systemInstruction: {
-            parts: [{ text: "你是一個名為 Nudge 的科幻太空船艦載 AI 助手，負責協助艦長（使用者）進行時間管理與自律任務。你的語氣要像科幻電影中的 AI（冷靜、聰明、帶點科技感），稱呼使用者為艦長。回答要簡潔有力，不要給出落落長的文章。\n如果使用者要求開始專注、倒數計時，請加上：[ACTION:START_FOCUS:分鐘數]\n如果使用者要求新增任務，請加上：[ACTION:ADD_TASK:任務名稱]\n如果使用者要求前往某個頁面(例如總覽、家長中心、營運後台等)，請加上：[ACTION:NAVIGATE:該頁面網址.html] (頁面包含: index.html, personal.html, guardian.html, groups.html, operations.html, planet.html)。\n如果使用者要求導覽或問系統怎麼用，請直接以文字簡單回覆介紹：左側是導航面板，中間是數據儀表板，下方是專屬星球，每天完成任務可以發射衛星環繞星球。" }]
+            parts: [{ text: systemText }]
           },
           contents: [{ parts: [{ text: text }] }]
         })
@@ -871,7 +933,8 @@ function injectAINavigator() {
 
       const loadingMsg = document.getElementById(loadingId);
       if (!response.ok) {
-        throw new Error("API 請求失敗：" + response.status);
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || "API 請求失敗：" + response.status);
       }
 
       const data = await response.json();
@@ -888,11 +951,25 @@ function injectAINavigator() {
       const taskMatch = reply.match(/\[ACTION:ADD_TASK:(.+)\]/);
       if (taskMatch) {
         reply = reply.replace(taskMatch[0], '');
-        const tasks = JSON.parse(localStorage.getItem('nudge_tasks') || '[]');
-        tasks.push(taskMatch[1].trim());
-        localStorage.setItem('nudge_tasks', JSON.stringify(tasks));
-        if (window.bindMissions) {
-          window.bindMissions(); // re-render if on planet page
+        const taskTitle = taskMatch[1].trim();
+        if (typeof db !== 'undefined' && db) {
+          addFirestoreTask(taskTitle);
+        } else {
+          const tasks = JSON.parse(localStorage.getItem('nudge_tasks') || '[]');
+          tasks.push(taskTitle);
+          localStorage.setItem('nudge_tasks', JSON.stringify(tasks));
+          if (window.bindMissions) {
+            window.bindMissions(); // re-render if on planet page
+          }
+        }
+      }
+
+      const completeMatch = reply.match(/\[ACTION:COMPLETE_TASK:(.+)\]/);
+      if (completeMatch) {
+        reply = reply.replace(completeMatch[0], '');
+        const taskId = completeMatch[1].trim();
+        if (typeof db !== 'undefined' && db) {
+          completeFirestoreTask(taskId);
         }
       }
 
@@ -904,8 +981,6 @@ function injectAINavigator() {
         }, 1500);
       }
 
-
-      
       if (loadingMsg) {
         loadingMsg.innerHTML = reply.trim().replace(/\n/g, '<br/>');
         loadingMsg.removeAttribute('id');
@@ -932,18 +1007,11 @@ window.bindMissions = function() {
   if (!list) return; // Not on planet page
   
   const defaultTasks = [
-    "專注 2 小時", "完成作業 A", "早睡 (12:00前)", 
-    "閱讀 30 分鐘", "運動 30 分鐘", "喝水 2000cc", 
-    "冥想 10 分鐘", "整理房間", "寫日記", 
-    "學習新單字", "少吃零食", "計畫明天",
-    "看 TED 演講", "伸展拉筋", "練習寫作",
-    "複習期末", "收拾桌面", "深呼吸練習",
-    "散步 15 分鐘", "感謝日記", "不喝飲料",
-    "聽 Podcast", "主動幫助人", "專案進度更新",
-    "背 10 個英文單字", "閱讀技術文章", "檢查電子郵件",
-    "做伸展操", "吃健康水果", "深蹲 30 下",
-    "學習一項新技能", "練習發音", "打掃浴室",
-    "思考明日目標", "練習呼吸法", "整理發票"
+    "完成 2 小時讀書",
+    "步行超過 6000 步",
+    "運動 30 分鐘",
+    "晚上 11:30 前睡覺",
+    "準備期中報告"
   ];
   const tasks = JSON.parse(localStorage.getItem('nudge_tasks')) || defaultTasks;
   // Initialize default if empty in localStorage just for the first time
@@ -1072,10 +1140,26 @@ window.bindMissions = function() {
           c.dispatchEvent(new Event('change'));
         }
       });
+      const viewSolar = document.querySelector('.view-solar-system');
+      const viewGalaxy = document.querySelector('.view-galaxy');
+      const viewUniverse = document.querySelector('.view-universe');
       
-      let i = 0;
+      let startIdx = 0;
+      let endIdx = 36;
+      if (viewSolar && viewSolar.style.display !== 'none') {
+        startIdx = 0;
+        endIdx = 12;
+      } else if (viewGalaxy && viewGalaxy.style.display !== 'none') {
+        startIdx = 0;
+        endIdx = 24;
+      } else if (viewUniverse && viewUniverse.style.display !== 'none') {
+        startIdx = 0;
+        endIdx = 36;
+      }
+      
+      let i = startIdx;
       const interval = setInterval(() => {
-        if (i >= allChecks.length) {
+        if (i >= endIdx || i >= allChecks.length) {
           clearInterval(interval);
           return;
         }
@@ -1138,7 +1222,7 @@ window.bindMissions = function() {
 
   function triggerBlackHoleSuction(force = false) {
     const viewGalaxy = document.querySelector('.view-galaxy');
-    if (!force && (!viewGalaxy || viewGalaxy.style.display === 'none')) return;
+    if (!viewGalaxy || viewGalaxy.style.display === 'none') return;
     
     const overlay = document.getElementById('blackholeOverlay');
     if (!overlay) return;
@@ -1156,7 +1240,7 @@ window.bindMissions = function() {
 
   function triggerUniverseExplosion(force = false) {
     const viewUniverse = document.querySelector('.view-universe');
-    if (!force && (!viewUniverse || viewUniverse.style.display === 'none')) return;
+    if (!viewUniverse || viewUniverse.style.display === 'none') return;
     
     const overlay = document.getElementById('explosionOverlay');
     if (!overlay) return;
@@ -1217,19 +1301,11 @@ window.bindMissions = function() {
     // Unlock Galaxy at 12
     if (unlockedCount >= 12) {
       document.getElementById('navGalaxy').style.display = 'inline-block';
-      if (unlockedCount === 12 && localStorage.getItem('nudge_auto_galaxy') !== 'true') {
-        document.getElementById('navGalaxy').click();
-        localStorage.setItem('nudge_auto_galaxy', 'true');
-      }
     }
     
     // Unlock Universe at 24
     if (unlockedCount >= 24) {
       document.getElementById('navUniverse').style.display = 'inline-block';
-      if (unlockedCount === 24 && localStorage.getItem('nudge_auto_universe') !== 'true') {
-        document.getElementById('navUniverse').click();
-        localStorage.setItem('nudge_auto_universe', 'true');
-      }
     }
   }
 
@@ -1257,92 +1333,19 @@ window.bindMissions = function() {
     check.addEventListener("change", (e) => {
       const satClass = e.target.dataset.satellite;
       const taskType = e.target.dataset.taskType || "general";
-      const sat = satClass ? $("." + satClass) : null;
       const plot = satClass ? $("." + satClass.replace("s", "p")) : null; // for city view
-      const gal = $(".g" + (index + 1)); // galaxy planet (up to 24)
-      const uni = $(".u" + (index - 23)); // universe planet (1 to 12)
       
       if (e.target.checked) {
-        let isSpecial = false;
-        let rareType = planetStates[index];
-        
-        // Generate RNG state if first time
-        if (!rareType) {
-          const rng = Math.random();
-          if (index < 12) {
-            if (rng < 0.1) rareType = 'hidden-comet';
-            else if (rng < 0.2) rareType = 'hidden-moon';
-            else rareType = 'standard';
-          } else if (index < 24) {
-            if (rng < 0.1) rareType = 'hidden-blackhole';
-            else rareType = 'standard';
-          } else {
-            if (rng < 0.15) rareType = 'hidden-explosion';
-            else rareType = 'standard';
-          }
-          
-          planetStates[index] = rareType;
-          localStorage.setItem('nudge_planet_states', JSON.stringify(planetStates));
-        }
-
-        // Apply to Solar System (s1-s12)
-        if (sat && index < 12) {
-          sat.classList.add("active");
-          if (rareType !== 'standard') {
-            sat.classList.add(rareType);
-            isSpecial = true;
-            triggerMeteorShower();
-          }
-        }
-        
-        // Apply to Galaxy (g1-g24)
-        if (gal && index < 24) {
-          gal.classList.add("active");
-          if (rareType !== 'standard') {
-            gal.classList.add(rareType);
-            isSpecial = true;
-            if (index >= 12 && rareType === 'hidden-blackhole') triggerBlackHoleSuction();
-          }
-        }
-
-        // Apply to Universe (u1-u12)
-        if (uni && index >= 24) {
-          uni.classList.add("active");
-          if (rareType !== 'standard') {
-            uni.classList.add(rareType);
-            isSpecial = true;
-            if (rareType === 'hidden-explosion') triggerUniverseExplosion();
-          }
-        }
-
         if (plot) {
           plot.classList.add("built");
           plot.classList.add("built-" + taskType);
         }
-        
-        showCombo(isSpecial);
-        checkEvolution();
+        showCombo(false);
       } else {
-        // Solar System
-        if (sat) {
-          sat.classList.remove("active");
-          sat.classList.remove("hidden-comet", "hidden-moon", "hidden-blackhole");
-        }
-        // Galaxy
-        if (gal) {
-          gal.classList.remove("active");
-          gal.classList.remove("hidden-comet", "hidden-moon", "hidden-blackhole");
-        }
-        // Universe
-        if (uni) {
-          uni.classList.remove("active");
-          uni.classList.remove("hidden-explosion");
-        }
         if (plot) {
           plot.classList.remove("built", "built-study", "built-health", "built-general", "built-skyscraper");
         }
         currentCombo = 0;
-        // Historical array preserves the unlocked RNG state
       }
     });
   });
@@ -1360,9 +1363,32 @@ window.bindMissions = function() {
     if (viewGalaxy) viewGalaxy.style.display = 'none';
     if (viewUniverse) viewUniverse.style.display = 'none';
     
-    if (stage === 'solar' && viewSolar) viewSolar.style.display = 'block';
-    if (stage === 'galaxy' && viewGalaxy) viewGalaxy.style.display = 'flex';
-    if (stage === 'universe' && viewUniverse) viewUniverse.style.display = 'block';
+    let targetView = null;
+    let displayStyle = 'block';
+    
+    if (stage === 'solar') {
+      targetView = viewSolar;
+      displayStyle = 'block';
+    } else if (stage === 'galaxy') {
+      targetView = viewGalaxy;
+      displayStyle = 'flex';
+    } else if (stage === 'universe') {
+      targetView = viewUniverse;
+      displayStyle = 'block';
+    }
+    
+    if (targetView) {
+      targetView.style.display = displayStyle;
+      
+      // Force browser reflow to restart CSS animations (prevents Safari/Chrome 3D transform display:none freeze bug)
+      const animatedEls = targetView.querySelectorAll('.starfield, .orbit-line, .mission-satellite, .asteroid, .galaxy-orbit-line, .galaxy-planet, .universe-orbit-line, .universe-planet, .unlocked-planet-node');
+      animatedEls.forEach(el => {
+        const originalStyle = el.style.animation;
+        el.style.animation = 'none';
+        void el.offsetHeight; // Force reflow
+        el.style.animation = originalStyle;
+      });
+    }
   }
 
   if (btnSolar) btnSolar.addEventListener('click', () => switchStage('solar'));
@@ -1472,7 +1498,9 @@ function bindExamTemplates() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  try { injectSidebarControls(); } catch(e){}
   try { injectModuleMenu(); } catch(e){}
+  try { injectAdminSwitch(); } catch(e){ console.warn("Admin switch init failed:", e); }
   try { injectDisplayModeControls(); } catch(e){}
   try { injectAINavigator(); } catch(e){}
   try { animateCounters(); } catch(e){}
@@ -1488,4 +1516,3674 @@ window.addEventListener("DOMContentLoaded", () => {
 
 window.addEventListener("resize", bootCharts);
 
+function injectSidebarControls() {
+  const sidebar = document.querySelector(".sidebar");
+  if (!sidebar) return;
 
+  // 1. Inject Floating Toggle Button & Backdrop
+  if (!document.getElementById("sidebarToggleBtn")) {
+    const toggleBtn = document.createElement("button");
+    toggleBtn.id = "sidebarToggleBtn";
+    toggleBtn.className = "sidebar-toggle";
+    toggleBtn.setAttribute("aria-label", "Toggle Sidebar");
+    toggleBtn.innerHTML = `
+      <span></span>
+      <span></span>
+      <span></span>
+    `;
+    document.body.appendChild(toggleBtn);
+
+    const backdrop = document.createElement("div");
+    backdrop.id = "sidebarBackdrop";
+    backdrop.className = "sidebar-backdrop";
+    document.body.appendChild(backdrop);
+
+    toggleBtn.addEventListener("click", () => {
+      if (window.innerWidth <= 980) {
+        document.body.classList.toggle("sidebar-open");
+      } else {
+        document.body.classList.toggle("sidebar-collapsed");
+        const collapsed = document.body.classList.contains("sidebar-collapsed");
+        localStorage.setItem("nudgeSidebarCollapsed", collapsed ? "true" : "false");
+      }
+    });
+
+    backdrop.addEventListener("click", () => {
+      document.body.classList.remove("sidebar-open");
+    });
+  }
+
+  // 2. Inject Desktop Close Button (Inner Collapse) next to brand logo
+  const brand = sidebar.querySelector(".brand");
+  if (brand && !sidebar.querySelector(".sidebar-close-inner")) {
+    const headerRow = document.createElement("div");
+    headerRow.className = "sidebar-header-row";
+    brand.parentNode.insertBefore(headerRow, brand);
+    headerRow.appendChild(brand);
+
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "sidebar-close-inner";
+    closeBtn.title = "收折選單";
+    closeBtn.innerHTML = "◀";
+    headerRow.appendChild(closeBtn);
+
+    closeBtn.addEventListener("click", () => {
+      document.body.classList.add("sidebar-collapsed");
+      localStorage.setItem("nudgeSidebarCollapsed", "true");
+    });
+  }
+
+  // 3. Restore saved layout preference
+  const savedCollapsed = localStorage.getItem("nudgeSidebarCollapsed");
+  if (savedCollapsed === "true" && window.innerWidth > 980) {
+    document.body.classList.add("sidebar-collapsed");
+  }
+}
+
+
+
+
+
+
+function injectAdminSwitch() {
+  if (window.__nudgeAdminSwitchInitialized) return;
+  window.__nudgeAdminSwitchInitialized = true;
+
+  const existingBtn1 = document.querySelector('.admin-switch-btn');
+  if (existingBtn1) existingBtn1.remove();
+  const existingBtn2 = document.querySelector('.exit-admin-btn');
+  if (existingBtn2) existingBtn2.remove();
+
+  const isAdminPage = window.location.pathname.includes('admin_dashboard.html');
+
+  if (!document.getElementById('globalAdminSwitchStyle')) {
+    const style = document.createElement('style');
+    style.id = 'globalAdminSwitchStyle';
+    style.innerHTML = `
+    .global-admin-switch-btn {
+      position: fixed;
+      top: 1.5rem;
+      right: 1.5rem;
+      background: transparent;
+      border: none;
+      color: #F3F4F6;
+      font-weight: 700;
+      font-size: 1.1rem;
+      cursor: pointer;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+      transition: opacity 0.2s;
+    }
+    .global-admin-switch-btn:hover {
+      opacity: 0.8;
+    }
+    .global-login-modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10000;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+    .global-login-modal-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .global-login-modal {
+      background: var(--c-panel-bg);
+      padding: 2.5rem;
+      border-radius: 20px;
+      width: 100%;
+      max-width: 400px;
+      box-shadow: 0 24px 48px var(--shadow-color);
+      transform: translateY(20px);
+      transition: transform 0.3s ease;
+      border: 1px solid var(--c-border);
+      color: var(--c-text);
+    }
+    .global-login-modal-overlay.active .global-login-modal {
+      transform: translateY(0);
+    }
+    .global-login-modal h2 { margin-top: 0; margin-bottom: 1.5rem; font-size: 1.5rem; }
+    .global-form-group { margin-bottom: 1.25rem; text-align: left; }
+    .global-form-group label { display: block; font-size: 0.875rem; margin-bottom: 0.5rem; color: var(--c-text-muted); }
+    .global-form-group input { width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid var(--c-border); background: var(--c-bg); color: var(--c-text); box-sizing: border-box; }
+    .global-login-actions { display: flex; justify-content: flex-end; gap: 1rem; margin-top: 2rem; }
+    .global-btn-cancel { background: transparent; border: 1px solid var(--c-border); color: var(--c-text); padding: 0.6rem 1.2rem; border-radius: 8px; cursor: pointer; }
+    .global-btn-submit { background: var(--c-primary); border: none; color: white; padding: 0.6rem 1.2rem; border-radius: 8px; cursor: pointer; font-weight: 600; }
+    .global-error-msg { color: #ef4444; font-size: 0.875rem; margin-top: 0.5rem; display: none; text-align: left; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const main = document.querySelector('.main');
+  if (main) main.style.position = 'relative';
+  const btnContainer = main || document.body;
+
+  if (isAdminPage) {
+    const btn = document.createElement('button');
+    btn.className = 'global-admin-switch-btn';
+    btn.innerHTML = '⚙ 切回前台';
+    btn.onclick = () => window.location.href = 'dashboard.html';
+    btnContainer.appendChild(btn);
+  } else {
+    window.showAdminLoginModal = function() {
+      let overlay = document.getElementById('globalLoginModal');
+      if (!overlay) {
+        const modalHtml = `
+          <div class="global-login-modal-overlay" id="globalLoginModal">
+            <div class="global-login-modal">
+              <h2>後台登入</h2>
+              <div class="global-form-group">
+                <label>帳號</label>
+                <input type="text" id="gAdminUsername" placeholder="請使用 Firebase 帳號登入" />
+              </div>
+              <div class="global-form-group">
+                <label>密碼</label>
+                <input type="password" id="gAdminPassword" placeholder="請輸入後台帳號密碼" />
+              </div>
+              <div class="global-error-msg" id="gLoginError">請輸入帳號與密碼。</div>
+              <div class="global-login-actions">
+                <button class="global-btn-cancel" onclick="document.getElementById('globalLoginModal').classList.remove('active')">取消</button>
+                <button class="global-btn-submit" id="gAdminSubmitBtn" onclick="gAttemptLogin()">登入</button>
+              </div>
+            </div>
+          </div>
+        `;
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+        // Enter key to login
+        document.getElementById('gAdminPassword').addEventListener('keypress', function(e) {
+          if (e.key === 'Enter') gAttemptLogin();
+        });
+      }
+
+      document.getElementById('globalLoginModal').classList.add('active');
+      document.getElementById('gAdminUsername').focus();
+    };
+
+    window.gAttemptLogin = async function() {
+      const user = document.getElementById('gAdminUsername').value.trim();
+      const pass = document.getElementById('gAdminPassword').value;
+      const errorNode = document.getElementById('gLoginError');
+      const submitBtn = document.getElementById('gAdminSubmitBtn');
+      if (!user || !pass) {
+        errorNode.textContent = '請輸入帳號與密碼。';
+        errorNode.style.display = 'block';
+        return;
+      }
+
+      try {
+        errorNode.style.display = 'none';
+        submitBtn.disabled = true;
+        submitBtn.textContent = '登入中...';
+
+        await loadFirebaseSDKs();
+        if (typeof firebase === 'undefined' || !firebase.auth) {
+          throw new Error('Firebase 尚未載入，請確認網路連線後重試。');
+        }
+        if (!firebase.apps.length) {
+          firebase.initializeApp(firebaseConfig);
+        }
+
+        const auth = firebase.auth();
+        await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+        const credential = await auth.signInWithEmailAndPassword(user, pass);
+        localStorage.setItem('nudgeWebLoggedIn', 'true');
+        localStorage.setItem('nudgeActiveDemoUserId', credential.user.uid);
+        localStorage.removeItem('nudgePostLoginRedirect');
+        window.location.href = 'admin_dashboard.html';
+      } catch (err) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '登入';
+        errorNode.textContent = '後台登入失敗：' + err.message;
+        errorNode.style.display = 'block';
+      }
+    };
+
+    // Secret entry triggers:
+    
+    // 1. Double Click Brand Mark
+    const brandMark = document.querySelector('.brand-mark');
+    if (brandMark) {
+      brandMark.addEventListener('dblclick', () => {
+        window.showAdminLoginModal();
+      });
+    }
+
+    // 2. Keyboard Shortcut: Ctrl + Shift + A (or Cmd + Shift + A)
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        window.showAdminLoginModal();
+      }
+    });
+
+    // 3. Query Parameter: ?admin or ?ops
+    if (window.location.search.includes('admin') || window.location.search.includes('ops')) {
+      setTimeout(() => window.showAdminLoginModal(), 200);
+    }
+  }
+}
+
+function bootFirebaseBackedData() {
+  setTimeout(() => {
+    try { injectAdminSwitch(); } catch(e){ console.warn("Admin switch init failed:", e); }
+  }, 100);
+
+  // Render initial sidebar profile card from cache immediately
+  const cachedData = {
+    nickname: localStorage.getItem("nudgeNicknameCache") || "自律使用者",
+    myNudgeId: localStorage.getItem("nudgeActiveDemoUserId") || "NDG-Guest",
+    username: localStorage.getItem("nudgeActiveDemoUserId") || "NDG-Guest",
+    signature: localStorage.getItem("nudgeSignatureCache") || "今天也在穩定前進",
+    accentColor: localStorage.getItem("nudgeAccentColorCache") || "purple",
+    profileTitleBadgeKey: localStorage.getItem("nudgeTitleBadgeCache") || "",
+    disciplineCoins: parseInt(localStorage.getItem("nudgeCoinsCache") || "100"),
+    planetCount: parseInt(localStorage.getItem("nudgePlanetsCache") || "1"),
+    userRole: localStorage.getItem("nudgeRoleCache") || "personal"
+  };
+  try { updateSidebarProfile(cachedData); } catch(e){}
+
+  if (document.body.dataset.page === "operations") {
+    const prosperityElement = document.querySelector(".hero-card strong");
+    if (prosperityElement) {
+      const coins = localStorage.getItem("nudgeCoinsCache") || "0";
+      prosperityElement.dataset.count = coins;
+      prosperityElement.textContent = coins;
+    }
+  }
+
+  try { initializeFirebaseWeb(); } catch(e){}
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bootFirebaseBackedData);
+} else {
+  bootFirebaseBackedData();
+}
+
+// ─── Firebase / Firestore Real-time Sync Integration ──────────────────────────
+
+const firebaseConfig = {
+  apiKey: "__FIREBASE_WEB_API_KEY__",
+  authDomain: "nudge-discipline-app.firebaseapp.com",
+  projectId: "nudge-discipline-app",
+  storageBucket: "nudge-discipline-app.firebasestorage.app",
+  messagingSenderId: "497972469632",
+  appId: "1:497972469632:web:cb87819a70c7cb8f2f6b65"
+};
+
+function loadFirebaseSDKs() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const resolveOnce = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      resolve();
+    };
+    const timeoutId = setTimeout(resolveOnce, 4000);
+
+    if (window.firebase && window.firebase.auth && window.firebase.firestore) {
+      resolveOnce();
+      return;
+    }
+    const coreScript = document.createElement('script');
+    coreScript.src = "https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js";
+    coreScript.onload = () => {
+      const authScript = document.createElement('script');
+      authScript.src = "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js";
+      authScript.onload = () => {
+        const dbScript = document.createElement('script');
+        dbScript.src = "https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js";
+        dbScript.onload = () => {
+          resolveOnce();
+        };
+        dbScript.onerror = () => resolveOnce();
+        document.head.appendChild(dbScript);
+      };
+      authScript.onerror = () => resolveOnce();
+      document.head.appendChild(authScript);
+    };
+    coreScript.onerror = () => resolveOnce();
+    document.head.appendChild(coreScript);
+  });
+}
+
+let db = null;
+
+function initializeFirebaseWeb() {
+  loadFirebaseSDKs().then(() => {
+    if (typeof firebase !== 'undefined') {
+      try {
+        if (!firebase.apps.length) {
+          firebase.initializeApp(firebaseConfig);
+        }
+        db = firebase.firestore();
+        console.log("Firebase initialized successfully on Web Center");
+
+        const auth = firebase.auth();
+        const isPublic = () => {
+          const currentPath = window.location.pathname;
+          return currentPath.endsWith("/") || currentPath.endsWith("index.html") || currentPath.endsWith("dashboard.html") || currentPath.endsWith("login.html") || currentPath.includes("admin_dashboard.html");
+        };
+        const clearWebSession = () => {
+          localStorage.removeItem("nudgeWebLoggedIn");
+          localStorage.removeItem("nudgeActiveDemoUserId");
+        };
+        const redirectToLogin = () => {
+          const currentPath = window.location.pathname;
+          localStorage.setItem("nudgePostLoginRedirect", currentPath.split("/").pop() || "dashboard.html");
+          window.location.href = "login.html";
+        };
+        const handleUser = (user) => {
+          if (user) {
+            console.log("Authenticated user detected:", user.uid);
+            if (!user.isAnonymous) {
+              localStorage.setItem("nudgeWebLoggedIn", "true");
+              localStorage.setItem("nudgeActiveDemoUserId", user.uid);
+            }
+            startListeningToFirestoreData();
+            document.dispatchEvent(new Event('firebase-ready'));
+            return;
+          }
+
+          console.log("No authenticated user detected.");
+          clearWebSession();
+          if (!isPublic()) {
+            redirectToLogin();
+            return;
+          }
+          document.dispatchEvent(new Event('firebase-ready'));
+        };
+
+        auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL)
+          .catch(err => {
+            console.warn("Auth persistence setup failed:", err);
+          })
+          .then(() => {
+            auth.onAuthStateChanged((user) => {
+              if (user || localStorage.getItem("nudgeWebLoggedIn") !== "true") {
+                handleUser(user);
+                return;
+              }
+
+              setTimeout(() => handleUser(auth.currentUser), 800);
+            });
+          });
+      } catch (e) {
+        console.warn("Firebase initialization failed, falling back to mock data: ", e);
+        startListeningToFirestoreData();
+        document.dispatchEvent(new Event('firebase-ready'));
+      }
+    } else {
+      console.log("Firebase SDK not loaded, using local demo data");
+      startListeningToFirestoreData();
+      document.dispatchEvent(new Event('firebase-ready'));
+    }
+  });
+}
+
+function startListeningToFirestoreData() {
+  if (!db) return;
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const viewUserId = urlParams.get('userId');
+
+  // Always listen to the logged-in user first to prevent page load hangs
+  const currentUser = firebase.auth().currentUser;
+  const loggedInUid = currentUser ? currentUser.uid : null;
+  let activeUserId = viewUserId || loggedInUid || localStorage.getItem("nudgeActiveDemoUserId");
+
+  if (activeUserId) {
+    listenToUser(activeUserId);
+  }
+
+  db.collection("users").get().then((querySnapshot) => {
+    const users = [];
+    querySnapshot.forEach((doc) => {
+      users.push({ id: doc.id, ...doc.data() });
+    });
+
+    let finalActiveUserId = activeUserId;
+    if (users.length > 0) {
+      if (!finalActiveUserId || !users.some(u => u.id === finalActiveUserId)) {
+        if (!loggedInUid && !viewUserId) {
+          finalActiveUserId = users[0].id;
+        }
+      }
+    }
+
+    if (finalActiveUserId) {
+      if (!viewUserId) {
+        localStorage.setItem("nudgeActiveDemoUserId", finalActiveUserId);
+      }
+      
+      // Inject user switcher only if there are multiple users to switch between
+      if (users.length > 0 && !viewUserId) {
+        const panel = getOrCreateSidePanel();
+        if (panel && !$(".demo-user-select").length) {
+          injectUserSwitcher(users, finalActiveUserId);
+        }
+      }
+
+      listenToUser(finalActiveUserId);
+    }
+  }).catch(e => {
+    console.warn("Firestore access error: ", e);
+  });
+}
+
+function getOrCreateSidePanel() {
+  let panel = $(".demo-user-container");
+  if (!panel) {
+    const sidebar = $(".sidebar");
+    if (sidebar) {
+      const brandHeader = sidebar.querySelector(".sidebar-header-row") || sidebar.querySelector(".brand");
+      if (brandHeader) {
+        brandHeader.insertAdjacentHTML('afterend', '<section class="demo-user-container" style="margin-top: 14px; margin-bottom: 14px; padding: 0 16px;"></section>');
+      } else {
+        sidebar.insertAdjacentHTML('afterbegin', '<section class="demo-user-container" style="margin-top: 14px; margin-bottom: 14px; padding: 0 16px;"></section>');
+      }
+      panel = $(".demo-user-container");
+    }
+  }
+  return panel;
+}
+
+function injectUserSwitcher(users, activeUserId) {
+  const panel = getOrCreateSidePanel();
+  if (!panel || $(".demo-user-select").length) return;
+  
+  const selectHtml = `
+    <div style="margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 10px;" class="demo-user-select">
+      <span class="eyebrow">切換自律帳號</span>
+      <select id="demoUserSelect" class="module-select" style="width: 100%; margin-top: 5px; background: #1a1d24; color: #fff; border: 1px solid rgba(255,255,255,0.12); padding: 8px; borderRadius: 8px; font-weight: 600; cursor: pointer;">
+        ${users.map(u => `<option value="${u.id}" ${u.id === activeUserId ? 'selected' : ''}>${u.nickname} (${u.username || 'NDG'})</option>`).join('')}
+      </select>
+    </div>
+  `;
+  panel.insertAdjacentHTML('beforeend', selectHtml);
+  
+  document.getElementById("demoUserSelect")?.addEventListener("change", (e) => {
+    const nextUserId = e.target.value;
+    localStorage.setItem("nudgeActiveDemoUserId", nextUserId);
+    toast(`已切換自律帳號數據`);
+    setTimeout(() => window.location.reload(), 500);
+  });
+}
+
+function updateSidebarProfile(data) {
+  if (data) {
+    if (data.nickname) localStorage.setItem("nudgeNicknameCache", data.nickname);
+    if (data.signature) localStorage.setItem("nudgeSignatureCache", data.signature);
+    if (data.accentColor) localStorage.setItem("nudgeAccentColorCache", data.accentColor);
+    if (data.profileTitleBadgeKey) localStorage.setItem("nudgeTitleBadgeCache", data.profileTitleBadgeKey);
+    if (typeof data.disciplineCoins === 'number') localStorage.setItem("nudgeCoinsCache", data.disciplineCoins);
+    if (typeof data.planetCount === 'number') localStorage.setItem("nudgePlanetsCache", data.planetCount);
+    if (data.userRole) localStorage.setItem("nudgeRoleCache", data.userRole);
+  }
+
+  const existingCard = document.querySelector(".sidebar-profile-container");
+  if (existingCard) {
+    existingCard.remove();
+  }
+
+  // 門禁安全保護判斷
+  checkPagePermissions(data);
+}
+
+function showRelativeRequiredBanner() {
+  if (document.getElementById("guardianLinkRequiredBanner")) return;
+  const main = document.querySelector(".main");
+  if (!main) return;
+  const banner = document.createElement("div");
+  banner.id = "guardianLinkRequiredBanner";
+  banner.style.cssText = "background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: 16px; padding: 16px 24px; margin-top: 34px; font-weight: 700; color: #f59e0b; text-align: center;";
+  banner.innerHTML = `🔒 家長陪伴功能目前未啟用。請前往「<a href="guardian-link.html" style="color: #ff9e00; text-decoration: underline;">連結親屬</a>」完成親屬帳號綁定，以啟用週報、鼓勵卡與共同目標！`;
+  main.insertAdjacentElement("beforeend", banner);
+}
+
+function showGroupRequiredBanner() {
+  if (document.getElementById("groupLinkRequiredBanner")) return;
+  const main = document.querySelector(".main");
+  if (!main) return;
+  const banner = document.createElement("div");
+  banner.id = "groupLinkRequiredBanner";
+  banner.style.cssText = "background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.3); border-radius: 16px; padding: 16px 24px; margin-top: 34px; font-weight: 700; color: #3b82f6; text-align: center;";
+  banner.innerHTML = `🔒 團體管理功能目前未啟用。請前往「<a href="groups-link.html" style="color: #3b82f6; text-decoration: underline;">連結組織</a>」完成組織加入或創建，以解鎖團隊管理與專注挑戰功能！`;
+  main.insertAdjacentElement("beforeend", banner);
+}
+
+function checkPagePermissions(data) {
+  const userRole = data.userRole || "personal";
+  const path = window.location.pathname;
+  const isGuardianPage = path.includes("guardian") || document.body.getAttribute("data-page") === "guardian";
+  const isGroupsPage = path.includes("groups") || document.body.getAttribute("data-page") === "groups";
+  const isLinkPage = path.includes("guardian-link.html") || path.includes("groups-link.html");
+
+  // 1. 導覽列發光推薦與引導橫幅
+  updateNavigationRecommendation(userRole);
+
+  // 2. 移除舊的防護遮罩
+  const existingOverlay = document.getElementById("roleGatekeeperOverlay");
+  if (existingOverlay) {
+    existingOverlay.remove();
+  }
+
+  // 3. 移除網頁端舊的綁定卡片並恢復主體顯示（非連結頁面時才移除）
+  if (!isLinkPage) {
+    const existingBindingCard = document.getElementById("webBindingGatedCard");
+    if (existingBindingCard) {
+      existingBindingCard.remove();
+    }
+  }
+  const existingGroupInfo = document.getElementById("webGroupInfoCard");
+  if (existingGroupInfo) {
+    existingGroupInfo.remove();
+  }
+  document.querySelectorAll(".main > section, .main > div:not(.hero), .main > a").forEach(el => {
+    if (el.id !== "webBindingGatedCard" && el.id !== "webGroupInfoCard") {
+      el.style.display = ""; // 恢復預設
+    }
+  });
+
+  // For guardian and groups pages, always allow access.
+  if (isGuardianPage) {
+    const isLinked = data.webToolsState?.guardianInviteStatus?.status === 'linked';
+    const isGuardianLinkPage = window.location.pathname.includes("guardian-link.html");
+    
+    // Add subnav link dynamically if not present
+    const subnav = document.querySelector(".subnav");
+    if (subnav && !document.getElementById("guardianLinkTab") && !subnav.querySelector('a[href*="guardian-link"]')) {
+      subnav.insertAdjacentHTML("beforeend", `<a id="guardianLinkTab" href="guardian-link.html" class="${isGuardianLinkPage ? 'active' : ''}">連結親屬</a>`);
+    }
+
+    // Set side stats text in hero-card
+    const bindStatusTextNode = document.getElementById("guardianBindStatusText");
+    if (bindStatusTextNode) {
+      bindStatusTextNode.textContent = isLinked ? "已連結" : "未連結";
+      bindStatusTextNode.style.color = isLinked ? "#10b981" : "#ef4444";
+    }
+
+    if (!isLinked) {
+      // Remove linked banner if any
+      const existingBanner = document.getElementById("webGuardianLinkedBanner");
+      if (existingBanner) existingBanner.remove();
+
+      if (isGuardianLinkPage) {
+        if (!document.getElementById("webBindingGatedCard")) {
+          showWebRelativeBindingCard(false);
+        }
+        showRelativeRequiredBanner();
+        // Update descriptions to show role
+        const descNode = document.getElementById("webBindingDesc");
+        if (descNode) {
+          descNode.innerHTML = `🛡️ 當前身分：<strong style="color: #10b981;">${getRoleLabel(userRole)}</strong><br><br>您還未與家人進行親屬綁定。請在下方輸入對方的 Nudge ID 發送申請，或在列表處理待同意的申請。連結後即可查看對方專注、睡眠與健康數據。`;
+        }
+      } else {
+        const isOverviewPage = window.location.pathname.endsWith("guardian.html") || window.location.pathname.endsWith("guardian");
+        if (isOverviewPage) {
+          const careNote = document.getElementById("guardianCareNote");
+          if (careNote) {
+            careNote.style.display = "block";
+            careNote.style.textAlign = "center";
+            careNote.style.cursor = "pointer";
+            careNote.innerHTML = `
+              <a href="guardian-link.html" style="text-decoration: none; color: #f59e0b; font-weight: 700; font-size: 16px; line-height: 1.6; display: block; width: 100%;">
+                🔒 家長陪伴功能目前未啟用。請前往「<span style="color: #ff9e00; text-decoration: underline;">連結親屬</span>」完成親屬帳號綁定，以啟用週報、鼓勵卡與共同目標！
+              </a>
+            `;
+          }
+          const existingRequired = document.getElementById("guardianLinkRequiredBanner");
+          if (existingRequired) existingRequired.remove();
+        } else {
+          showRelativeRequiredBanner();
+        }
+        // Remove binding card if any on home page
+        const existingCard = document.getElementById("webBindingGatedCard");
+        if (existingCard) existingCard.remove();
+      }
+    } else {
+      const existingRequired = document.getElementById("guardianLinkRequiredBanner");
+      if (existingRequired) existingRequired.remove();
+      const existingCard = document.getElementById("webBindingGatedCard");
+      if (existingCard) existingCard.remove();
+
+      const careNote = document.getElementById("guardianCareNote");
+      if (careNote) {
+        careNote.style.display = "";
+        careNote.style.textAlign = "";
+        careNote.style.cursor = "";
+      }
+      if (!isGuardianLinkPage) {
+        if (!document.getElementById("webGuardianLinkedBanner")) {
+          showGuardianLinkedBanner(data);
+        }
+      } else {
+        const descNode = document.getElementById("webBindingDesc");
+        if (descNode) {
+          descNode.innerHTML = `🛡️ 您已成功與家人 <strong>${data.webToolsState?.guardianInvite?.relativeId || ''}</strong> 進行親屬綁定！您可以前往「<a href="guardian.html" style="color: #ff9e00; text-decoration: underline;">中心總覽</a>」開始查看自律數據。`;
+        }
+        const formNode = document.getElementById("webBindingForm");
+        if (formNode) formNode.style.display = "none";
+      }
+    }
+    return;
+  }
+  
+  if (isGroupsPage) {
+    const hasGroup = !!data.groupId;
+    const isGroupsLinkPage = window.location.pathname.includes("groups-link.html");
+
+    // Add subnav link dynamically if not present
+    const subnav = document.querySelector(".subnav");
+    if (subnav && !document.getElementById("groupsLinkTab") && !subnav.querySelector('a[href*="groups-link"]')) {
+      subnav.insertAdjacentHTML("beforeend", `<a id="groupsLinkTab" href="groups-link.html" class="${isGroupsLinkPage ? 'active' : ''}">連結組織</a>`);
+    }
+
+    const groupsStatusTextNode = document.getElementById("groupsBindStatusText");
+    if (groupsStatusTextNode) {
+      groupsStatusTextNode.textContent = hasGroup ? "已連結" : "未連結";
+      groupsStatusTextNode.style.color = hasGroup ? "#10b981" : "#ef4444";
+    }
+
+    if (window.location.pathname.includes("groups-creation.html")) {
+      if (hasGroup) {
+        renderWebGroupCreationPage(data);
+      } else {
+        showGroupRequiredBanner();
+        const container = document.getElementById("groupsCreationContainer");
+        if (container) {
+          container.innerHTML = `
+            <div class="panel" style="padding: 30px;">
+              <h2>🔒 尚未加入團體</h2>
+              <p>請先前往「<a href="groups-link.html" style="color: #3b82f6; text-decoration: underline;">連結組織</a>」頁面建立新團體或輸入 ID 加入，以解鎖團隊建立與成員管理功能！</p>
+            </div>
+          `;
+        }
+      }
+      return;
+    }
+
+    if (!hasGroup) {
+      if (isGroupsLinkPage) {
+        if (!document.getElementById("webBindingGatedCard")) {
+          showWebGroupBindingCard(false);
+        }
+        showGroupRequiredBanner();
+      } else {
+        const isOverviewPage = window.location.pathname.endsWith("groups.html") || window.location.pathname.endsWith("groups");
+        if (isOverviewPage) {
+          const careNote = document.getElementById("groupCareNote");
+          if (careNote) {
+            careNote.style.display = "block";
+            careNote.style.textAlign = "center";
+            careNote.style.cursor = "pointer";
+            careNote.innerHTML = `
+              <a href="groups-link.html" style="text-decoration: none; color: #3b82f6; font-weight: 700; font-size: 16px; line-height: 1.6; display: block; width: 100%;">
+                🔒 團體管理功能目前未啟用。請前往「<span style="color: #3b82f6; text-decoration: underline;">連結組織</span>」完成組織加入或創建，以解鎖團隊管理與專注挑戰功能！
+              </a>
+            `;
+          }
+          const existingRequired = document.getElementById("groupLinkRequiredBanner");
+          if (existingRequired) existingRequired.remove();
+        } else {
+          showGroupRequiredBanner();
+        }
+        const existingCard = document.getElementById("webBindingGatedCard");
+        if (existingCard) existingCard.remove();
+      }
+    } else {
+      const existingRequired = document.getElementById("groupLinkRequiredBanner");
+      if (existingRequired) existingRequired.remove();
+
+      const careNote = document.getElementById("groupCareNote");
+      if (careNote) {
+        careNote.style.display = "";
+        careNote.style.textAlign = "";
+        careNote.style.cursor = "";
+      }
+
+      if (isGroupsLinkPage) {
+        const linkContainer = document.getElementById("groupsLinkContainer");
+        if (linkContainer) {
+          linkContainer.style.maxWidth = "none";
+        }
+        renderWebGroupCreationPage(data);
+      } else {
+        const existingCard = document.getElementById("webBindingGatedCard");
+        if (existingCard) existingCard.remove();
+        renderWebGroupInfo(data);
+      }
+    }
+    return;
+  }
+}
+
+function updateNavigationRecommendation(userRole) {
+  // 清除舊的發光
+  document.querySelectorAll(".nav a").forEach(a => a.classList.remove("recommend-glow"));
+
+  const isHome = document.body.getAttribute("data-page") === "home" || window.location.pathname.includes("index");
+  const main = document.querySelector(".main");
+
+  // 移除舊橫幅
+  const oldBanner = document.getElementById("recommendBanner");
+  if (oldBanner) {
+    oldBanner.remove();
+  }
+
+  if (userRole === "guardian") {
+    // 家長發光推薦
+    document.querySelectorAll(".nav a").forEach(a => {
+      if (a.getAttribute("href") === "guardian.html") {
+        a.classList.add("recommend-glow");
+      }
+    });
+    // 首頁橫幅引導
+    if (isHome && main) {
+      const bannerHtml = `
+        <div id="recommendBanner" class="recommend-banner">
+          <div class="recommend-banner-content">
+            <span class="recommend-banner-icon">🛡️</span>
+            <div class="recommend-banner-text">
+              <strong>您當前處於家長陪伴身分</strong>
+              <p>系統已為您推薦專屬【家長陪伴中心】，點擊右側按鈕快速進入以進行管理。</p>
+            </div>
+          </div>
+          <button class="recommend-banner-btn" onclick="window.location.href='guardian.html'">前往家長中心</button>
+        </div>
+      `;
+      main.insertAdjacentHTML("afterbegin", bannerHtml);
+    }
+  } else if (["group", "enterprise", "tutor", "school"].includes(userRole)) {
+    // 團體發光推薦
+    document.querySelectorAll(".nav a").forEach(a => {
+      if (a.getAttribute("href") === "groups.html") {
+        a.classList.add("recommend-glow");
+      }
+    });
+    // 首頁橫幅引導
+    if (isHome && main) {
+      const bannerHtml = `
+        <div id="recommendBanner" class="recommend-banner">
+          <div class="recommend-banner-content">
+            <span class="recommend-banner-icon">👥</span>
+            <div class="recommend-banner-text">
+              <strong>您當前處於團體/教育管理身分</strong>
+              <p>系統已為您推薦專屬【團體與教育管理端】，點擊右側按鈕快速進入管理挑戰與排程。</p>
+            </div>
+          </div>
+          <button class="recommend-banner-btn" onclick="window.location.href='groups.html'">前往團體中心</button>
+        </div>
+      `;
+      main.insertAdjacentHTML("afterbegin", bannerHtml);
+    }
+  }
+}
+
+let currentIncomingRequests = [];
+let currentOutgoingRequests = [];
+let incomingRequestsSub = null;
+let outgoingRequestsSub = null;
+
+let currentIncomingGroupRequests = [];
+let incomingGroupRequestsSub = null;
+
+function listenToRequests(userId) {
+  if (!db) return;
+  if (incomingRequestsSub) incomingRequestsSub();
+  if (outgoingRequestsSub) outgoingRequestsSub();
+  if (incomingGroupRequestsSub) incomingGroupRequestsSub();
+
+  incomingRequestsSub = db.collection("guardian_requests")
+    .where("receiverId", "==", userId)
+    .onSnapshot(snapshot => {
+      const docs = [];
+      snapshot.forEach(doc => {
+        docs.push({ id: doc.id, ...doc.data() });
+      });
+      currentIncomingRequests = docs.filter(d => d.status === 'pending');
+      
+      const accepted = docs.filter(d => d.status === 'accepted');
+      if (accepted.length > 0) {
+        const relativeNudgeId = accepted[0].senderNudgeId;
+        autoUpdateWebLinkage(userId, relativeNudgeId);
+      } else {
+        checkAndAutoClearWebLinkage(userId);
+      }
+      refreshWebBindingCardUI();
+    }, err => console.error("Incoming requests listen error: ", err));
+
+  outgoingRequestsSub = db.collection("guardian_requests")
+    .where("senderId", "==", userId)
+    .onSnapshot(snapshot => {
+      const docs = [];
+      snapshot.forEach(doc => {
+        docs.push({ id: doc.id, ...doc.data() });
+      });
+      currentOutgoingRequests = docs.filter(d => d.status === 'pending');
+
+      const accepted = docs.filter(d => d.status === 'accepted');
+      if (accepted.length > 0) {
+        const relativeNudgeId = accepted[0].receiverNudgeId;
+        autoUpdateWebLinkage(userId, relativeNudgeId);
+      } else {
+        checkAndAutoClearWebLinkage(userId);
+      }
+      refreshWebBindingCardUI();
+    }, err => console.error("Outgoing requests listen error: ", err));
+
+  incomingGroupRequestsSub = db.collection("group_requests")
+    .where("receiverId", "==", userId)
+    .where("status", "==", "pending")
+    .onSnapshot(snapshot => {
+      const docs = [];
+      snapshot.forEach(doc => {
+        docs.push({ id: doc.id, ...doc.data() });
+      });
+      currentIncomingGroupRequests = docs;
+      refreshWebBindingCardUI();
+    }, err => console.error("Incoming group requests listen error: ", err));
+}
+
+function autoUpdateWebLinkage(userId, relativeNudgeId) {
+  const store = JSON.parse(localStorage.getItem("nudgeWebTools") || "{}");
+  const isAlreadyLinked = store.guardianInviteStatus?.status === 'linked' && store.guardianInvite?.relativeId === relativeNudgeId;
+  if (isAlreadyLinked) return;
+
+  db.collection("users").doc(userId).update({
+    "webToolsState.guardianInvite": {
+      "goal": "共同健康與專注",
+      "permission": "完整資料",
+      "message": "親屬帳號已連結。",
+      "relativeId": relativeNudgeId
+    },
+    "webToolsState.guardianInviteStatus": {
+      "status": "linked",
+      "updatedAt": new Date().toISOString()
+    }
+  }).then(() => {
+    console.log("Web linkage auto-updated successfully.");
+  }).catch(err => {
+    console.error("Failed to auto-update web linkage: ", err);
+  });
+}
+
+function checkAndAutoClearWebLinkage(userId) {
+  const store = JSON.parse(localStorage.getItem("nudgeWebTools") || "{}");
+  const isLinked = store.guardianInviteStatus?.status === 'linked';
+  if (!isLinked) return;
+
+  db.collection("guardian_requests")
+    .where("receiverId", "==", userId)
+    .where("status", "==", "accepted")
+    .get()
+    .then(incomingSnap => {
+      if (incomingSnap.size > 0) return;
+      db.collection("guardian_requests")
+        .where("senderId", "==", userId)
+        .where("status", "==", "accepted")
+        .get()
+        .then(outgoingSnap => {
+          if (outgoingSnap.size > 0) return;
+          
+          db.collection("users").doc(userId).update({
+            "webToolsState.guardianInvite": firebase.firestore.FieldValue.delete(),
+            "webToolsState.guardianInviteStatus": firebase.firestore.FieldValue.delete()
+          }).then(() => {
+            console.log("Web linkage auto-cleared successfully.");
+          }).catch(err => {
+            console.error("Failed to auto-clear web linkage: ", err);
+          });
+        });
+    });
+}
+
+function refreshWebBindingCardUI() {
+  if (document.getElementById("webBindingGatedCard")) {
+    renderRequestsList();
+  }
+  
+  if (document.getElementById("notificationsPageContainer")) {
+    renderNotificationsPage();
+  }
+
+  // 顯示全域的親屬綁定邀請通知橫幅
+  const main = document.querySelector(".main");
+  if (!main) return;
+  
+  let banner = document.getElementById("globalGuardianRequestBanner");
+  if (currentIncomingRequests.length > 0) {
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "globalGuardianRequestBanner";
+      banner.style.cssText = "background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 12px; padding: 12px 20px; margin: 16px 0 24px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px;";
+      
+      const firstSection = main.querySelector("header.hero, section, .page-section, div:not(#globalGuardianRequestBanner)");
+      if (firstSection) {
+        firstSection.insertAdjacentElement("beforebegin", banner);
+      } else {
+        main.insertAdjacentElement("afterbegin", banner);
+      }
+    }
+    
+    const req = currentIncomingRequests[0];
+    const senderName = req.senderNickname || "使用者";
+    const senderNudge = req.senderNudgeId || "";
+    const senderRole = getRoleLabel(req.senderRole || "personal");
+    
+    banner.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <span style="font-size: 24px;">🔔</span>
+        <div>
+          <strong style="color: #f59e0b; display: block; margin-bottom: 4px;">收到親屬綁定邀請</strong>
+          <span style="color: rgba(255,255,255,0.85); font-size: 14px;">${senderName} (${senderNudge}) [身分：${senderRole}] 邀請與您建立親屬連結。接收邀請後將開始雙向數據同步。</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button onclick="approveWebGuardianRequest('${req.id}')" style="background: #10b981; border: none; color: #fff; padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: 700; cursor: pointer;">同意</button>
+        <button onclick="declineWebGuardianRequest('${req.id}')" style="background: transparent; border: 1px solid #ef4444; color: #ef4444; padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: 700; cursor: pointer;">拒絕</button>
+      </div>
+    `;
+  } else {
+    if (banner) banner.remove();
+  }
+
+  // 顯示全域的團體綁定邀請通知橫幅
+  let groupBanner = document.getElementById("globalGroupRequestBanner");
+  if (currentIncomingGroupRequests.length > 0) {
+    if (document.getElementById("webGroupRequestsContainer")) {
+      renderGroupRequestsList();
+    }
+
+    if (!groupBanner) {
+      groupBanner = document.createElement("div");
+      groupBanner.id = "globalGroupRequestBanner";
+      groupBanner.style.cssText = "background: rgba(20, 184, 166, 0.1); border: 1px solid rgba(20, 184, 166, 0.3); border-radius: 12px; padding: 12px 20px; margin: 16px 0 24px 0; display: flex; align-items: center; justify-content: space-between; gap: 16px;";
+      
+      const firstSection = main.querySelector("header.hero, section, .page-section, div:not(#globalGuardianRequestBanner):not(#globalGroupRequestBanner)");
+      if (firstSection) {
+        firstSection.insertAdjacentElement("beforebegin", groupBanner);
+      } else {
+        main.insertAdjacentElement("afterbegin", groupBanner);
+      }
+    }
+    
+    const req = currentIncomingGroupRequests[0];
+    const senderName = req.senderNickname || "使用者";
+    const senderNudge = req.senderNudgeId || "";
+    const groupName = req.groupName || "自律團體";
+    const groupId = req.groupId || "";
+    
+    groupBanner.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <span style="font-size: 24px;">👥</span>
+        <div>
+          <strong style="color: #14b8a6; display: block; margin-bottom: 4px;">收到團體邀請</strong>
+          <span style="color: rgba(255,255,255,0.85); font-size: 14px;">${senderName} (${senderNudge}) 邀請您加入團隊【${groupName}】(ID: ${groupId})。同意後將會與團隊同步您的挑戰進度！</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button onclick="approveWebGroupRequest('${req.id}', '${groupId}', '${groupName}')" style="background: #14b8a6; border: none; color: #fff; padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: 700; cursor: pointer;">同意加入</button>
+        <button onclick="declineWebGroupRequest('${req.id}')" style="background: transparent; border: 1px solid #ef4444; color: #ef4444; padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: 700; cursor: pointer;">拒絕</button>
+      </div>
+    `;
+  } else {
+    if (groupBanner) groupBanner.remove();
+  }
+}
+
+function sendWebGroupRequest(targetNudgeId, groupId, groupName) {
+  const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+  if (!activeUserId || !db) return;
+
+  const targetNudgeIdUpper = targetNudgeId.trim().toUpperCase();
+  if (!targetNudgeIdUpper) {
+    toast("Nudge ID 不能為空");
+    return;
+  }
+
+  db.collection("users").doc(activeUserId).get().then(mySnap => {
+    if (!mySnap.exists) return;
+    const myData = mySnap.data();
+    const myNudgeId = myData.myNudgeId || myData.username || "";
+    const myNickname = myData.nickname || "使用者";
+
+    if (targetNudgeIdUpper === myNudgeId.toUpperCase()) {
+      toast("不能邀請自己");
+      return;
+    }
+
+    db.collection("users").where("username", "==", targetNudgeIdUpper).limit(1).get().then(querySnap => {
+      if (querySnap.empty) {
+        toast("找不到該 Nudge ID 的使用者");
+        return;
+      }
+      const receiverSnap = querySnap.docs[0];
+      const receiverId = receiverSnap.id;
+
+      if (receiverSnap.data().groupId === groupId) {
+        toast("對方已在該團體中");
+        return;
+      }
+
+      db.collection("group_requests")
+        .where("senderId", "==", activeUserId)
+        .where("receiverId", "==", receiverId)
+        .where("status", "==", "pending")
+        .get()
+        .then(outgoingCheck => {
+          if (!outgoingCheck.empty) {
+            toast("已發送過邀請，請耐心等待對方同意");
+            return;
+          }
+
+          db.collection("group_requests").add({
+            senderId: activeUserId,
+            senderNudgeId: myNudgeId,
+            senderNickname: myNickname,
+            receiverId: receiverId,
+            groupId: groupId,
+            groupName: groupName,
+            status: "pending",
+            createdAt: new Date().toISOString()
+          }).then(() => {
+            toast(`已成功向 ${targetNudgeIdUpper} 發送團隊邀請！`);
+            document.getElementById("webGroupInviteInput").value = "";
+          }).catch(err => {
+            console.error(err);
+            toast("發送邀請失敗");
+          });
+        });
+    });
+  }).catch(err => console.error(err));
+}
+
+function approveWebGroupRequest(requestId, groupId, groupName) {
+  const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+  if (!db || !activeUserId) return;
+  
+  db.collection("users").doc(activeUserId).update({
+    groupId: groupId,
+    groupName: groupName || "自律小組",
+    isGroupOwner: false,
+    userRole: "group",
+    updatedAt: new Date().toISOString()
+  }).then(() => {
+    db.collection("group_requests").doc(requestId).update({
+      status: "accepted",
+      updatedAt: new Date().toISOString()
+    }).then(() => {
+      toast("已成功加入團隊！ 🎉");
+      window.location.reload();
+    });
+  }).catch(err => {
+    console.error(err);
+    toast("同意失敗");
+  });
+}
+
+function declineWebGroupRequest(requestId) {
+  if (!db) return;
+  db.collection("group_requests").doc(requestId).update({
+    status: "declined",
+    updatedAt: new Date().toISOString()
+  }).then(() => {
+    toast("已拒絕該邀請");
+  }).catch(err => {
+    console.error(err);
+    toast("操作失敗");
+  });
+}
+
+window.approveWebGroupRequest = approveWebGroupRequest;
+window.declineWebGroupRequest = declineWebGroupRequest;
+
+function renderGroupRequestsList() {
+  const container = document.getElementById("webGroupRequestsContainer");
+  if (!container) return;
+
+  let html = "";
+  if (currentIncomingGroupRequests.length > 0) {
+    html += `
+      <div class="web-pending-section" style="margin-top: 24px; text-align: left; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1);">
+        <h4 style="font-size: 13px; color: #14b8a6; margin-bottom: 12px; font-weight: 700;">待處理的團體邀請：</h4>
+    `;
+    currentIncomingGroupRequests.forEach(req => {
+      const senderName = req.senderNickname || "使用者";
+      const senderNudge = req.senderNudgeId || "";
+      const groupName = req.groupName || "自律小組";
+      const groupId = req.groupId || "";
+      html += `
+        <div class="web-pending-item" style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: rgba(20, 184, 166, 0.08); border: 1px solid rgba(20, 184, 166, 0.2); border-radius: 8px; margin-bottom: 8px;">
+          <div>
+            <div style="font-size: 14px; color: #fff; font-weight: 700; margin-bottom: 4px;">團隊：${groupName}</div>
+            <div style="font-size: 12px; color: rgba(255,255,255,0.6);">邀請人：${senderName} (${senderNudge})</div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button onclick="approveWebGroupRequest('${req.id}', '${groupId}', '${groupName}')" style="background: #14b8a6; border: none; color: #fff; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 700;">同意</button>
+            <button onclick="declineWebGroupRequest('${req.id}')" style="background: transparent; border: 1px solid #ef4444; color: #ef4444; padding: 6px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; font-weight: 700;">拒絕</button>
+          </div>
+        </div>
+      `;
+    });
+    html += `</div>`;
+  } else {
+    html = `
+      <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 13px; color: var(--muted);">
+        目前沒有待處理的團體邀請。
+      </div>
+    `;
+  }
+  container.innerHTML = html;
+}
+
+function renderNotificationsPage() {
+  const container = document.getElementById("notificationsPageContainer");
+  if (!container) return;
+
+  const totalPending = currentIncomingRequests.length + currentIncomingGroupRequests.length;
+  const countEl = document.getElementById("totalPendingCount");
+  if (countEl) countEl.textContent = totalPending;
+
+  if (totalPending === 0) {
+    container.innerHTML = `
+      <div style="text-align: center; padding: 40px; color: var(--muted);">
+        <span style="font-size: 48px; display: block; margin-bottom: 12px; opacity: 0.5;">📭</span>
+        <strong style="font-size: 16px;">目前沒有任何待處理的邀請</strong>
+        <p style="margin-top: 8px;">當您收到親屬綁定或團隊邀請時，會顯示在這裡。</p>
+      </div>
+    `;
+    return;
+  }
+
+  let html = "";
+  
+  if (currentIncomingRequests.length > 0) {
+    html += `
+      <div style="margin-bottom: 32px;">
+        <h3 style="color: #f59e0b; margin-bottom: 16px; display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 20px;">🛡️</span> 親屬綁定邀請
+        </h3>
+    `;
+    currentIncomingRequests.forEach(req => {
+      const senderName = req.senderNickname || "使用者";
+      const senderNudge = req.senderNudgeId || "";
+      const senderRole = getRoleLabel(req.senderRole || "personal");
+      html += `
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 16px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 12px; margin-bottom: 12px;">
+          <div>
+            <div style="font-size: 15px; color: #fff; font-weight: 700; margin-bottom: 4px;">邀請人：${senderName} (${senderNudge})</div>
+            <div style="font-size: 13px; color: rgba(255,255,255,0.7);">對方目前身分：<strong style="color: #f59e0b;">${senderRole}</strong></div>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <button onclick="approveWebGuardianRequest('${req.id}')" style="background: #10b981; border: none; color: #fff; padding: 8px 16px; border-radius: 8px; font-weight: 700; cursor: pointer;">同意</button>
+            <button onclick="declineWebGuardianRequest('${req.id}')" style="background: transparent; border: 1px solid #ef4444; color: #ef4444; padding: 8px 16px; border-radius: 8px; font-weight: 700; cursor: pointer;">拒絕</button>
+          </div>
+        </div>
+      `;
+    });
+    html += `</div>`;
+  }
+
+  if (currentIncomingGroupRequests.length > 0) {
+    html += `
+      <div style="margin-bottom: 32px;">
+        <h3 style="color: #14b8a6; margin-bottom: 16px; display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 20px;">👥</span> 團隊組織邀請
+        </h3>
+    `;
+    currentIncomingGroupRequests.forEach(req => {
+      const senderName = req.senderNickname || "使用者";
+      const senderNudge = req.senderNudgeId || "";
+      const groupName = req.groupName || "自律小組";
+      const groupId = req.groupId || "";
+      html += `
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 16px; background: rgba(20, 184, 166, 0.08); border: 1px solid rgba(20, 184, 166, 0.2); border-radius: 12px; margin-bottom: 12px;">
+          <div>
+            <div style="font-size: 15px; color: #fff; font-weight: 700; margin-bottom: 4px;">團隊：${groupName} (ID: ${groupId})</div>
+            <div style="font-size: 13px; color: rgba(255,255,255,0.7);">邀請人：${senderName} (${senderNudge})</div>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <button onclick="approveWebGroupRequest('${req.id}', '${groupId}', '${groupName}')" style="background: #14b8a6; border: none; color: #fff; padding: 8px 16px; border-radius: 8px; font-weight: 700; cursor: pointer;">加入</button>
+            <button onclick="declineWebGroupRequest('${req.id}')" style="background: transparent; border: 1px solid #ef4444; color: #ef4444; padding: 8px 16px; border-radius: 8px; font-weight: 700; cursor: pointer;">拒絕</button>
+          </div>
+        </div>
+      `;
+    });
+    html += `</div>`;
+  }
+
+  container.innerHTML = html;
+}
+
+function sendWebGuardianRequest(targetNudgeId) {
+  const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+  if (!activeUserId || !db) return;
+
+  const targetNudgeIdUpper = targetNudgeId.trim().toUpperCase();
+  if (!targetNudgeIdUpper) {
+    toast("Nudge ID 不能為空");
+    return;
+  }
+
+  db.collection("users").doc(activeUserId).get().then(mySnap => {
+    if (!mySnap.exists) return;
+    const myData = mySnap.data();
+    const myNudgeId = myData.myNudgeId || myData.username || "";
+    const myNickname = myData.nickname || "使用者";
+    const myRole = myData.userRole || "personal";
+
+    if (targetNudgeIdUpper === myNudgeId.toUpperCase()) {
+      toast("不能與自己進行親屬綁定");
+      return;
+    }
+
+    db.collection("users").where("username", "==", targetNudgeIdUpper).limit(1).get().then(querySnap => {
+      if (querySnap.empty) {
+        toast("找不到該 Nudge ID 的使用者");
+        return;
+      }
+      const receiverSnap = querySnap.docs[0];
+      const receiverId = receiverSnap.id;
+      const receiverNudgeId = receiverSnap.data().username || "";
+
+      const isLinked = myData.webToolsState?.guardianInviteStatus?.status === 'linked';
+      if (isLinked && myData.webToolsState?.guardianInvite?.relativeId === receiverNudgeId) {
+        toast("雙方已處於綁定狀態");
+        return;
+      }
+
+      db.collection("guardian_requests")
+        .where("senderId", "==", activeUserId)
+        .where("receiverId", "==", receiverId)
+        .where("status", "==", "pending")
+        .get()
+        .then(outgoingCheck => {
+          if (!outgoingCheck.empty) {
+            toast("已發送過綁定申請，請耐心等待對方同意");
+            return;
+          }
+
+          db.collection("guardian_requests")
+            .where("senderId", "==", receiverId)
+            .where("receiverId", "==", activeUserId)
+            .where("status", "==", "pending")
+            .get()
+            .then(incomingCheck => {
+              if (!incomingCheck.empty) {
+                approveWebGuardianRequest(incomingCheck.docs[0].id);
+                toast("偵測到對方已發送過申請，已自動為您同意並綁定！ 🎉");
+                return;
+              }
+
+              db.collection("guardian_requests").add({
+                senderId: activeUserId,
+                senderNudgeId: myNudgeId,
+                senderNickname: myNickname,
+                senderRole: myRole,
+                receiverId: receiverId,
+                receiverNudgeId: receiverNudgeId,
+                status: "pending",
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+              }).then(() => {
+                toast(`已成功向 ${receiverNudgeId} 發送綁定申請！`);
+              }).catch(err => {
+                console.error(err);
+                toast("發送申請失敗");
+              });
+            });
+        });
+    });
+  }).catch(err => console.error(err));
+}
+
+function approveWebGuardianRequest(requestId) {
+  if (!db) return;
+  db.collection("guardian_requests").doc(requestId).update({
+    status: "accepted",
+    updatedAt: new Date().toISOString()
+  }).then(() => {
+    toast("已成功同意親屬綁定！ 🎉");
+  }).catch(err => {
+    console.error(err);
+    toast("同意失敗");
+  });
+}
+
+function declineWebGuardianRequest(requestId) {
+  if (!db) return;
+  db.collection("guardian_requests").doc(requestId).update({
+    status: "declined",
+    updatedAt: new Date().toISOString()
+  }).then(() => {
+    toast("已拒絕該綁定申請");
+  }).catch(err => {
+    console.error(err);
+    toast("操作失敗");
+  });
+}
+
+function cancelWebGuardianRequest(requestId) {
+  if (!db) return;
+  db.collection("guardian_requests").doc(requestId).update({
+    status: "declined",
+    updatedAt: new Date().toISOString()
+  }).then(() => {
+    toast("已取消綁定申請");
+  }).catch(err => {
+    console.error(err);
+    toast("取消失敗");
+  });
+}
+
+// Expose these methods globally so inline html onclick can access them
+window.approveWebGuardianRequest = approveWebGuardianRequest;
+window.declineWebGuardianRequest = declineWebGuardianRequest;
+window.cancelWebGuardianRequest = cancelWebGuardianRequest;
+
+function renderRequestsList() {
+  const container = document.getElementById("webRequestsContainer");
+  if (!container) return;
+
+  let html = "";
+
+  if (currentIncomingRequests.length > 0) {
+    html += `
+      <div class="web-pending-section" style="margin-top: 15px; text-align: left;">
+        <h4 style="font-size: 13px; color: #fff; margin-bottom: 8px; font-weight: 700;">待處理的親屬綁定申請：</h4>
+    `;
+    currentIncomingRequests.forEach(req => {
+      const senderName = req.senderNickname || "使用者";
+      const senderNudge = req.senderNudgeId || "";
+      html += `
+        <div class="web-pending-item" style="display: flex; align-items: center; justify-content: space-between; padding: 10px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; margin-bottom: 8px;">
+          <span style="font-size: 13px; color: #fff;">${senderName} (${senderNudge})</span>
+          <div style="display: flex; gap: 8px;">
+            <button onclick="approveWebGuardianRequest('${req.id}')" style="background: #10b981; border: none; color: #fff; padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; font-weight: 600;">同意</button>
+            <button onclick="declineWebGuardianRequest('${req.id}')" style="background: transparent; border: 1px solid #ef4444; color: #ef4444; padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; font-weight: 600;">拒絕</button>
+          </div>
+        </div>
+      `;
+    });
+    html += `</div>`;
+  }
+
+  if (currentOutgoingRequests.length > 0) {
+    html += `
+      <div class="web-pending-section" style="margin-top: 15px; text-align: left;">
+    `;
+    currentOutgoingRequests.forEach(req => {
+      html += `
+        <div class="web-pending-item" style="display: flex; align-items: center; justify-content: space-between; padding: 10px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; margin-bottom: 8px;">
+          <span style="font-size: 13px; color: rgba(255, 255, 255, 0.7); display: flex; align-items: center; gap: 6px;">
+            <span style="color: #f59e0b;">⏳</span> 已向 ${req.receiverNudgeId} 發送申請，等待同意中...
+          </span>
+          <button onclick="cancelWebGuardianRequest('${req.id}')" style="background: transparent; border: 1px solid rgba(255, 255, 255, 0.3); color: rgba(255,255,255,0.6); padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; font-weight: 600;">取消</button>
+        </div>
+      `;
+    });
+    html += `</div>`;
+  }
+
+  container.innerHTML = html;
+
+  const form = document.getElementById("webBindingForm");
+  if (form) {
+    if (currentOutgoingRequests.length > 0) {
+      form.style.display = "none";
+    } else {
+      form.style.display = "flex";
+    }
+  }
+}
+
+function showWebRelativeBindingCard(atTop) {
+  const main = document.querySelector(".main");
+  if (!main || document.getElementById("webBindingGatedCard")) return;
+
+  const cardHtml = `
+    <div id="webBindingGatedCard" class="web-binding-gated-wrapper" style="margin-bottom: 24px;">
+      <h2>🛡️ 親屬帳號連結</h2>
+      <p id="webBindingDesc">您還未與家人進行親屬綁定。請在下方輸入對方的 Nudge ID 發送申請，或在列表處理待同意的申請。連結後即可查看對方專注、睡眠與健康數據。</p>
+      
+      <div id="webRequestsContainer" style="margin-bottom: 20px;"></div>
+
+      <div id="webBindingForm" class="web-binding-form">
+        <input type="text" id="webRelativeIdInput" class="web-binding-input" placeholder="輸入對方的 Nudge ID (例如: NDG_XXXXXX)">
+        <button id="webRelativeBindBtn" class="role-gatekeeper-btn" style="width: 100%;">發送綁定申請</button>
+      </div>
+    </div>
+  `;
+  
+  if (atTop) {
+    // Insert at the very top of main, before any existing sections
+    const firstSection = main.querySelector("section, .page-section, div:not(.hero)");
+    if (firstSection) {
+      firstSection.insertAdjacentHTML("beforebegin", cardHtml);
+    } else {
+      main.insertAdjacentHTML("afterbegin", cardHtml);
+    }
+  } else {
+    main.insertAdjacentHTML("beforeend", cardHtml);
+  }
+
+  document.getElementById("webRelativeBindBtn")?.addEventListener("click", () => {
+    const relativeInput = document.getElementById("webRelativeIdInput");
+    const relativeId = relativeInput ? relativeInput.value.trim() : "";
+    if (!relativeId) {
+      toast("請輸入有效的 Nudge ID");
+      return;
+    }
+    sendWebGuardianRequest(relativeId);
+  });
+
+  renderRequestsList();
+}
+
+function showGuardianLinkedBanner(data) {
+  const main = document.querySelector(".main");
+  if (!main) return;
+  const relativeId = data.webToolsState?.guardianInvite?.relativeId || "";
+  const banner = document.createElement("div");
+  banner.id = "webGuardianLinkedBanner";
+  banner.style.cssText = "background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); border-radius: 16px; padding: 16px 24px; margin-bottom: 24px; display: flex; align-items: center; gap: 16px; justify-content: space-between;";
+  banner.innerHTML = `
+    <div><span style="font-size: 18px; margin-right: 10px;">✅</span><strong style="color: #10b981;">已與 ${relativeId} 連結</strong><span style="color: var(--muted); font-size: 13px; margin-left: 12px;">家長共同目標、每週報告與鼓勵功能均已啟用</span></div>
+    <button onclick="toast('解除連結功能請在 App 端操作')" style="background: transparent; border: 1px solid #ef4444; color: #ef4444; border-radius: 10px; padding: 6px 14px; font-weight: 700; cursor: pointer; font-size: 13px;">解除親屬連結</button>
+  `;
+  const firstSection = main.querySelector("section, .page-section");
+  if (firstSection) {
+    firstSection.insertAdjacentElement("beforebegin", banner);
+  } else {
+    main.insertAdjacentElement("afterbegin", banner);
+  }
+}
+
+function showWebGroupBindingCard(atTop) {
+  const main = document.querySelector(".main");
+  if (!main || document.getElementById("webBindingGatedCard")) return;
+
+  const cardHtml = `
+    <div id="webBindingGatedCard" class="web-binding-gated-wrapper" style="margin-bottom: 24px;">
+      <h2>👥 團體自律組織連結</h2>
+      <p>請先創建新的自律團體（獲取最高房主權限並生成團體 ID），或輸入已有組織 ID 加入，以解鎖專注挑戰、共同目標等功能：</p>
+      <div class="web-binding-form" style="margin-bottom: 24px; border-bottom: 1px dashed rgba(255,255,255,0.1); padding-bottom: 24px;">
+        <input type="text" id="webGroupNameInput" class="web-binding-input" placeholder="輸入要創建的團體名稱 (例如: 皇家自律班)">
+        <button id="webGroupCreateBtn" class="role-gatekeeper-btn" style="width: 100%;">創建新團體並獲取房主權限</button>
+      </div>
+      <div class="web-binding-form">
+        <input type="text" id="webGroupIdInput" class="web-binding-input" placeholder="輸入已有團體組織 ID (格式如: GRP-88921)">
+        <button id="webGroupJoinBtn" class="role-gatekeeper-btn" style="width: 100%; background: transparent; border: 1px solid var(--page-accent); color: var(--page-accent);">輸入 ID 連結並加入</button>
+      </div>
+    </div>
+  `;
+  
+  if (atTop) {
+    const firstSection = main.querySelector("section, .page-section, div:not(.hero)");
+    if (firstSection) {
+      firstSection.insertAdjacentHTML("beforebegin", cardHtml);
+    } else {
+      main.insertAdjacentHTML("afterbegin", cardHtml);
+    }
+  } else {
+    main.insertAdjacentHTML("beforeend", cardHtml);
+  }
+
+  document.getElementById("webGroupCreateBtn")?.addEventListener("click", () => {
+    const nameInput = document.getElementById("webGroupNameInput");
+    const name = nameInput ? nameInput.value.trim() : "";
+    if (!name) {
+      toast("請輸入有效的團體名稱");
+      return;
+    }
+    const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+    const randomId = 'GRP-' + Math.floor(Math.random() * 100000);
+    if (activeUserId && typeof db !== "undefined") {
+      db.collection("users").doc(activeUserId).update({
+        groupId: randomId,
+        groupName: name,
+        isGroupOwner: true,
+        updatedAt: new Date().toISOString()
+      }).then(() => {
+        toast(`成功創建「${name}」團體，ID：${randomId}！ 🚀`);
+      }).catch(err => {
+        console.error("創建團體失敗：", err);
+        toast("操作失敗，請稍後再試");
+      });
+    }
+  });
+
+  document.getElementById("webGroupJoinBtn")?.addEventListener("click", () => {
+    const groupInput = document.getElementById("webGroupIdInput");
+    const groupId = groupInput ? groupInput.value.trim() : "";
+    if (!groupId) {
+      toast("請輸入有效的團體 ID");
+      return;
+    }
+    const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+    if (activeUserId && typeof db !== "undefined") {
+      db.collection("users").doc(activeUserId).update({
+        groupId: groupId,
+        groupName: "自律小組",
+        isGroupOwner: false,
+        updatedAt: new Date().toISOString()
+      }).then(() => {
+        toast(`已成功加入團體 ID：${groupId}！ 🎯`);
+      }).catch(err => {
+        console.error("加入團體失敗：", err);
+        toast("操作失敗，請稍後再試");
+      });
+    }
+  });
+}
+
+function renderWebGroupInfo(data) {
+  const main = document.querySelector(".main");
+  if (!main) return;
+
+  const existingCard = document.getElementById("webGroupInfoCard");
+  if (existingCard) {
+    existingCard.remove();
+  }
+
+  const path = window.location.pathname;
+  const isMainGroupsPage = path.includes("groups.html") || path.endsWith("/groups") || (document.body.getAttribute("data-page") === "groups" && !path.includes("groups-"));
+  if (!isMainGroupsPage) return;
+
+  const isOwner = data.isGroupOwner;
+  const groupName = data.groupName || "自律小組";
+  const groupId = data.groupId || "";
+
+  const cardHtml = `
+    <div id="webGroupInfoCard" class="web-binding-gated-wrapper" style="text-align: left; max-width: 800px; margin-top: 10px; margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; gap: 20px; background: rgba(20, 184, 166, 0.08); border: 1px solid rgba(20, 184, 166, 0.25); box-shadow: var(--shadow); border-radius: 16px; padding: 20px 24px;">
+      <div>
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+          <span style="background: rgba(20, 184, 166, 0.2); color: #14b8a6; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; border: 1px solid rgba(20, 184, 166, 0.3);">
+            ${isOwner ? '👑 團體建立者 (房主)' : '👥 團體成員'}
+          </span>
+          <span style="font-family: monospace; font-size: 11px; color: var(--muted);">ID: ${groupId}</span>
+        </div>
+        <h3 style="margin: 0; font-size: 18px; color: #fff; font-weight: 800;">當前關聯團體：${groupName}</h3>
+      </div>
+      <button id="webGroupLeaveBtn" style="background: transparent; border: 1px solid #ef4444; color: #ef4444; padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; transition: all 0.2s;">
+        ${isOwner ? '解散此團體' : '退出此小組'}
+      </button>
+    </div>
+  `;
+
+  const header = main.querySelector("header");
+  if (header) {
+    header.insertAdjacentHTML("afterend", cardHtml);
+  } else {
+    main.insertAdjacentHTML("afterbegin", cardHtml);
+  }
+
+  document.getElementById("webGroupLeaveBtn")?.addEventListener("click", () => {
+    if (confirm(`確定要${isOwner ? '解散' : '退出'}當前團體【${groupName}】嗎？`)) {
+      const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+      if (activeUserId && typeof db !== "undefined") {
+        db.collection("users").doc(activeUserId).update({
+          groupId: firebase.firestore.FieldValue.delete(),
+          groupName: firebase.firestore.FieldValue.delete(),
+          isGroupOwner: firebase.firestore.FieldValue.delete(),
+          updatedAt: new Date().toISOString()
+        }).then(() => {
+          toast("已退出當前團體");
+        }).catch(err => {
+          console.error("退出團體失敗：", err);
+          toast("操作失敗，請稍後再試");
+        });
+      }
+    }
+  });
+}
+
+function renderWebGroupCreationPage(data) {
+  const container = document.getElementById("groupsCreationContainer") || document.getElementById("groupsLinkContainer");
+  if (!container) return;
+
+  const isOwner = data.isGroupOwner;
+  const groupName = data.groupName || "自律小組";
+  const groupId = data.groupId || "";
+
+  if (!groupId) {
+    // Member has no group yet. Render the binding form beautifully inside the page!
+    container.innerHTML = `
+      <div class="workspace-layout">
+        <div class="panel">
+          <span class="eyebrow">Create Team</span>
+          <h2>👥 創建您的自律組織</h2>
+          <p>輸入要建立的團隊名稱。系統將為您生成唯一的團隊 ID。您可以在手機 App 端輸入該 ID 加入此團隊並進行同步。</p>
+          <div class="web-binding-form" style="margin-top: 20px;">
+            <input type="text" id="webGroupNameInputPage" class="web-binding-input" placeholder="例如: 皇家自律班" style="margin-bottom: 12px; width: 100%; max-width: 400px; display: block;">
+            <button id="webGroupCreateBtnPage" class="button primary" style="padding: 10px 20px; font-weight: 700; cursor: pointer;">創建新團體並獲取房主權限</button>
+          </div>
+        </div>
+        <aside class="panel">
+          <span class="eyebrow">Join Team</span>
+          <h2>🔗 加入已有團隊</h2>
+          <p>輸入其他房主建立的組織 ID，加入其組織並進行同步。</p>
+          <div class="web-binding-form" style="margin-top: 20px;">
+            <input type="text" id="webGroupIdInputPage" class="web-binding-input" placeholder="格式如: GRP-88921" style="margin-bottom: 12px; width: 100%; max-width: 400px; display: block;">
+            <button id="webGroupJoinBtnPage" class="button ghost" style="padding: 10px 20px; font-weight: 700; cursor: pointer;">輸入 ID 連結並加入</button>
+          </div>
+          <div id="webGroupRequestsContainer"></div>
+        </aside>
+      </div>
+    `;
+
+    document.getElementById("webGroupCreateBtnPage")?.addEventListener("click", () => {
+      const nameInput = document.getElementById("webGroupNameInputPage");
+      const name = nameInput ? nameInput.value.trim() : "";
+      if (!name) {
+        toast("請輸入有效的團體名稱");
+        return;
+      }
+      const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+      const randomId = 'GRP-' + Math.floor(Math.random() * 100000);
+      if (activeUserId && typeof db !== "undefined") {
+        db.collection("users").doc(activeUserId).update({
+          groupId: randomId,
+          groupName: name,
+          isGroupOwner: true,
+          userRole: "group",
+          updatedAt: new Date().toISOString()
+        }).then(() => {
+          toast(`成功創建「${name}」團體，ID：${randomId}！ 🚀`);
+          window.location.reload();
+        }).catch(err => {
+          console.error("創建團體失敗：", err);
+          toast("操作失敗，請稍後再試");
+        });
+      }
+    });
+
+    document.getElementById("webGroupJoinBtnPage")?.addEventListener("click", () => {
+      const groupInput = document.getElementById("webGroupIdInputPage");
+      const groupId = groupInput ? groupInput.value.trim() : "";
+      if (!groupId) {
+        toast("請輸入有效的團體 ID");
+        return;
+      }
+      const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+      if (activeUserId && typeof db !== "undefined") {
+        db.collection("users").doc(activeUserId).update({
+          groupId: groupId,
+          groupName: "自律小組",
+          isGroupOwner: false,
+          userRole: "group",
+          updatedAt: new Date().toISOString()
+        }).then(() => {
+          toast(`已成功加入團體 ID：${groupId}！ 🎯`);
+          window.location.reload();
+        }).catch(err => {
+          console.error("加入團體失敗：", err);
+          toast("操作失敗，請稍後再試");
+        });
+      }
+    });
+
+    renderGroupRequestsList();
+    return;
+  }
+
+  // Already has a group. Render the management interface with real-time member listing!
+  container.innerHTML = `
+    <div class="workspace-layout">
+      <div class="panel" style="flex: 2;">
+        <span class="eyebrow">Team Information</span>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
+          <div>
+            <h2 style="margin: 0; color: #fff; font-size: 24px; font-weight: 800;">${groupName}</h2>
+            <p style="margin: 4px 0 0 0; color: var(--muted); font-size: 14px; font-family: monospace;">團體組織 ID: ${groupId}</p>
+          </div>
+          <span style="background: rgba(20, 184, 166, 0.15); color: #14b8a6; padding: 4px 12px; border-radius: 8px; font-size: 12px; font-weight: 700; border: 1px solid rgba(20, 184, 166, 0.3);">
+            ${isOwner ? '👑 房主 (Owner)' : '👥 成員 (Member)'}
+          </span>
+        </div>
+
+        <span class="eyebrow">Group Members</span>
+        <div class="table-responsive" style="margin-top: 14px;">
+          <table class="table" style="width: 100%; border-collapse: collapse; text-align: left;">
+            <thead>
+              <tr style="border-bottom: 1px solid rgba(255,255,255,0.08); color: var(--muted); font-size: 12px; text-transform: uppercase;">
+                <th style="padding: 12px 8px;">成員暱稱 (Nudge ID)</th>
+                <th style="padding: 12px 8px;">身分</th>
+                <th style="padding: 12px 8px; text-align: center;">今日專注 (分)</th>
+                <th style="padding: 12px 8px; text-align: center;">今日步數</th>
+                <th style="padding: 12px 8px; text-align: center;">今日睡眠 (時)</th>
+                <th style="padding: 12px 8px; text-align: center;">任務完成度</th>
+              </tr>
+            </thead>
+            <tbody id="webGroupMembersListTable" style="font-size: 14px; color: rgba(255,255,255,0.85);">
+              <tr>
+                <td colspan="6" style="padding: 24px; text-align: center; color: var(--muted);">正在加載團體成員資料...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <aside class="panel" style="flex: 1; display: flex; flex-direction: column; justify-content: space-between;">
+        <div>
+          <span class="eyebrow">Settings</span>
+          <h2>團隊管理選項</h2>
+          <p style="margin-top: 8px; color: var(--muted); font-size: 14px;">
+            ${isOwner ? '身為團隊建立者，您可以解散該團隊或修改團隊名稱。解散後所有成員將自動移出該組織。' : '您可以退出此小組，退出後將無法同步小組的挑戰與任務模板。'}
+          </p>
+          ${isOwner ? `
+            <div style="margin-top: 24px; padding-top: 24px; border-top: 1px dashed rgba(255,255,255,0.1);">
+              <span class="eyebrow">Invite Member</span>
+              <h3 style="font-size: 16px; margin-bottom: 8px;">邀請新成員加入</h3>
+              <div style="display: flex; flex-direction: column; gap: 12px;">
+                <input type="text" id="webGroupInviteInput" class="web-binding-input" placeholder="輸入要邀請的 Nudge ID" style="width: 100%;">
+                <button id="webGroupInviteBtn" class="button primary" style="width: 100%; font-weight: 700;">發送團隊邀請</button>
+              </div>
+            </div>
+          ` : ''}
+        </div>
+        <div style="margin-top: 24px;">
+          <button id="webGroupLeaveBtnPage" class="button" style="width: 100%; background: #ef4444; border: none; color: #fff; padding: 12px; border-radius: 8px; font-weight: 700; cursor: pointer; transition: all 0.2s;">
+            ${isOwner ? '🚨 解散此自律團體' : '🚪 退出此自律小組'}
+          </button>
+        </div>
+      </aside>
+    </div>
+  `;
+
+  // Bind Leave / Disband action
+  document.getElementById("webGroupLeaveBtnPage")?.addEventListener("click", () => {
+    if (confirm(`確定要${isOwner ? '解散' : '退出'}當前團體【${groupName}】嗎？`)) {
+      const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+      if (activeUserId && typeof db !== "undefined") {
+        db.collection("users").doc(activeUserId).update({
+          groupId: firebase.firestore.FieldValue.delete(),
+          groupName: firebase.firestore.FieldValue.delete(),
+          isGroupOwner: firebase.firestore.FieldValue.delete(),
+          userRole: "personal",
+          updatedAt: new Date().toISOString()
+        }).then(() => {
+          toast("已成功解除團體關聯");
+          window.location.reload();
+        }).catch(err => {
+          console.error("退出團體失敗：", err);
+          toast("操作失敗，請稍後再試");
+        });
+      }
+    }
+  });
+
+  document.getElementById("webGroupInviteBtn")?.addEventListener("click", () => {
+    const inviteInput = document.getElementById("webGroupInviteInput");
+    const targetId = inviteInput ? inviteInput.value.trim() : "";
+    if (!targetId) {
+      toast("請輸入有效的 Nudge ID");
+      return;
+    }
+    sendWebGroupRequest(targetId, groupId, groupName);
+  });
+
+  // Query and list all members of the group in real-time
+  db.collection("users").where("groupId", "==", groupId).get().then(snap => {
+    const listTable = document.getElementById("webGroupMembersListTable");
+    if (!listTable) return;
+    listTable.innerHTML = "";
+
+    let totalMembers = snap.size;
+    const memberCountEl = document.getElementById("webGroupMemberCount");
+    if (memberCountEl) {
+      memberCountEl.dataset.count = totalMembers;
+      memberCountEl.textContent = totalMembers;
+    }
+
+    if (snap.empty) {
+      listTable.innerHTML = `<tr><td colspan="6" style="padding: 24px; text-align: center; color: var(--muted);">無任何成員資料</td></tr>`;
+      return;
+    }
+
+    snap.forEach(doc => {
+      const mData = doc.data();
+      const mNickname = mData.nickname || "未知使用者";
+      const mNudgeId = mData.username || doc.id;
+      const mIsOwner = mData.isGroupOwner || false;
+
+      // Extract stats
+      const dailySummaries = mData.dailySummaries || [];
+      const mTodaySummary = dailySummaries[dailySummaries.length - 1] || {};
+      const mSleepHours = mTodaySummary.sleepHours || (mData.sleepHours || 0);
+      const mSteps = mTodaySummary.steps || (mData.steps || 0);
+      const mFocusMinutes = mTodaySummary.focusMinutes || (mData.focusSeconds ? Math.floor(mData.focusSeconds / 60) : 0);
+
+      // Task completion
+      const mTasks = mData.tasks || [];
+      const completedTasksCount = mTasks.filter(t => t.isDone || t.done).length;
+      const completionRate = mTasks.length > 0 ? Math.round((completedTasksCount / mTasks.length) * 100) : 0;
+
+      listTable.innerHTML += `
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.04); transition: background 0.2s;">
+          <td style="padding: 14px 8px;">
+            <div style="font-weight: 700; color: #fff;">${mNickname}</div>
+            <div style="font-size: 11px; color: var(--muted); font-family: monospace;">${mNudgeId}</div>
+          </td>
+          <td style="padding: 14px 8px;">
+            <span style="font-size: 12px; color: ${mIsOwner ? '#f59e0b' : 'rgba(255,255,255,0.5)'}; font-weight: 600;">
+              ${mIsOwner ? '👑 房主' : '👥 成員'}
+            </span>
+          </td>
+          <td style="padding: 14px 8px; text-align: center; font-weight: 600;">${mFocusMinutes}</td>
+          <td style="padding: 14px 8px; text-align: center; font-weight: 600; color: #22c7bb;">${mSteps}</td>
+          <td style="padding: 14px 8px; text-align: center; font-weight: 600; color: #8d7aff;">${mSleepHours.toFixed(1)}</td>
+          <td style="padding: 14px 8px; text-align: center;">
+            <div style="display: flex; align-items: center; justify-content: center; gap: 8px;">
+              <span style="font-weight: 700; color: #00ffcc; font-size: 13px;">${completionRate}%</span>
+              <div style="width: 50px; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden; display: inline-block;">
+                <div style="width: ${completionRate}%; height: 100%; background: #00ffcc; border-radius: 3px;"></div>
+              </div>
+            </div>
+          </td>
+        </tr>
+      `;
+    });
+  }).catch(err => {
+    console.error("Error loading group members: ", err);
+  });
+}
+
+function getRoleLabel(role) {
+  switch (role) {
+    case "personal": return "個人/小孩";
+    case "guardian": return "家長";
+    case "group": return "團體挑戰";
+    case "enterprise": return "企業管理";
+    case "tutor": return "補習班管理";
+    case "school": return "學校班級";
+    default: return "未設定";
+  }
+}
+
+function showGatekeeperOverlay(icon, title, desc, targetRole) {
+  const overlayHtml = `
+    <div id="roleGatekeeperOverlay" class="role-gatekeeper-overlay">
+      <div class="role-gatekeeper-content">
+        <div class="role-gatekeeper-inner">
+          <div class="role-gatekeeper-icon">${icon}</div>
+          <div class="role-gatekeeper-title">${title}</div>
+          <div class="role-gatekeeper-desc">${desc}</div>
+          <button id="roleGatekeeperBtn" class="role-gatekeeper-btn">一鍵切換為【${getRoleLabel(targetRole)}】身分</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML("beforeend", overlayHtml);
+
+  // 綁定按鈕點擊事件
+  const btn = document.getElementById("roleGatekeeperBtn");
+  if (btn) {
+    btn.addEventListener("click", () => {
+      const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+      if (activeUserId && typeof db !== "undefined") {
+        db.collection("users").doc(activeUserId).update({
+          userRole: targetRole,
+          updatedAt: new Date().toISOString()
+        }).then(() => {
+          toast(`自律身份已成功切換為：【${getRoleLabel(targetRole)}】`);
+        }).catch(err => {
+          console.error("更新角色失敗：", err);
+          toast("切換失敗，請稍後再試");
+        });
+      }
+    });
+  }
+}
+
+// ====================================================
+// 🔧 同步伺服器設定
+// 本機開發：http://127.0.0.1:5001
+// 部署到 Render 後：改成你的 Render URL，例如：
+//   https://nudge-sync-server.onrender.com
+// ====================================================
+const SYNC_SERVER_URL = "https://graduation-project-nudge.onrender.com";
+
+function syncToFlaskServer(data, dailySummaries, tasks) {
+  const latestSummary = dailySummaries[dailySummaries.length - 1] || {};
+  const completedCount = tasks.filter(t => t.isDone || t.done).length;
+  
+  // 1. Sync User Profile
+  fetch(`${SYNC_SERVER_URL}/api/sync/user`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      user_id: "an_nudge",
+      name: data.nickname || data.name || "使用者",
+      avatar: "🧑‍🚀",
+      status: data.signature || "被專案快搞瘋了"
+    })
+  }).catch(err => console.log("Flask User Sync Error: ", err));
+
+  // 2. Sync Health
+  fetch(`${SYNC_SERVER_URL}/api/sync/health`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      user_id: "an_nudge",
+      sleep_hours: latestSummary.sleepHours || 7.5,
+      steps: latestSummary.steps || 8000,
+      exercise_minutes: latestSummary.exerciseMinutes || 45
+    })
+  }).catch(err => console.log("Flask Health Sync Error: ", err));
+
+  // 3. Sync Focus & Planet Unlock
+  fetch(`${SYNC_SERVER_URL}/api/sync/focus`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      user_id: "an_nudge",
+      tasks_completed: completedCount,
+      tasks_total: tasks.length,
+      focus_minutes: latestSummary.focusMinutes || (data.focusSeconds ? Math.floor(data.focusSeconds / 60) : 40),
+      current_goal: data.webToolsState?.guardianInvite?.goal || ""
+    })
+  })
+  .then(res => res.json())
+  .then(resData => {
+    if (resData.new_planet_unlocked) {
+      toast(`🪐 太陽系躍遷！本週自律達標，Flask 後端成功為您解鎖新星球：【${resData.new_planet_unlocked}】！`);
+    }
+  })
+  .catch(err => console.log("Flask Focus Sync Error: ", err));
+}
+
+let previousTasksState = null;
+let currentUserTasks = [];
+let currentUserDailySummaries = [];
+let childDocSub = null;
+let currentChildNudgeId = null;
+let groupOwnerSub = null;
+let currentGroupIdListener = null;
+
+function updateParentDashboardWithChildData(childData) {
+  const tasks = childData.tasks || [];
+  const dailySummaries = childData.dailySummaries || [];
+  
+  const completedTasksCount = tasks.filter(t => t.isDone || t.done).length;
+  const completionRate = tasks.length > 0 ? Math.round((completedTasksCount / tasks.length) * 100) : 0;
+  
+  const todaySummary = dailySummaries[dailySummaries.length - 1] || {};
+  const sleepHours = todaySummary.sleepHours || (childData.sleepHours || 0);
+  const steps = todaySummary.steps || (childData.steps || 0);
+  const focusMinutes = todaySummary.focusMinutes || (childData.focusSeconds ? Math.floor(childData.focusSeconds / 60) : 0);
+  
+  const childTasksCountEl = document.getElementById("childTasksCount");
+  if (childTasksCountEl) {
+    childTasksCountEl.dataset.count = completedTasksCount;
+    childTasksCountEl.textContent = `${completedTasksCount} 個`;
+  }
+  
+  const childTasksRingEl = document.getElementById("childTasksRing");
+  if (childTasksRingEl) {
+    childTasksRingEl.style.setProperty("--p", `${completionRate}%`);
+    const ringText = childTasksRingEl.querySelector("strong");
+    if (ringText) ringText.textContent = `${completionRate}%`;
+  }
+  
+  const childFocusValEl = document.getElementById("childFocusVal");
+  if (childFocusValEl) {
+    childFocusValEl.dataset.count = focusMinutes;
+    childFocusValEl.textContent = `${focusMinutes} 分`;
+  }
+  
+  const childFocusRingEl = document.getElementById("childFocusRing");
+  if (childFocusRingEl) {
+    const focusRate = Math.min(Math.round((focusMinutes / 60) * 100), 100);
+    childFocusRingEl.style.setProperty("--p", `${focusRate}%`);
+    const ringText = childFocusRingEl.querySelector("strong");
+    if (ringText) ringText.textContent = `${focusRate}%`;
+  }
+  
+  const childSleepValEl = document.getElementById("childSleepVal");
+  if (childSleepValEl) {
+    childSleepValEl.textContent = `${sleepHours.toFixed(1)} 小時`;
+  }
+  
+  const childSleepRingEl = document.getElementById("childSleepRing");
+  if (childSleepRingEl) {
+    const sleepRate = Math.min(Math.round((sleepHours / 8) * 100), 100);
+    childSleepRingEl.style.setProperty("--p", `${sleepRate}%`);
+    const ringText = childSleepRingEl.querySelector("strong");
+    if (ringText) ringText.textContent = `${sleepRate}%`;
+  }
+  
+  const childStepsValEl = document.getElementById("childStepsVal");
+  if (childStepsValEl) {
+    childStepsValEl.dataset.count = steps;
+    childStepsValEl.textContent = `${steps}`;
+  }
+  
+  const childStepsRingEl = document.getElementById("childStepsRing");
+  if (childStepsRingEl) {
+    const stepsRate = Math.min(Math.round((steps / 10000) * 100), 100);
+    childStepsRingEl.style.setProperty("--p", `${stepsRate}%`);
+    const ringText = childStepsRingEl.querySelector("strong");
+    if (ringText) ringText.textContent = `${stepsRate}%`;
+  }
+  
+  if (dailySummaries.length > 0) {
+    const scoresList = dailySummaries.map(s => s.disciplineScore || 0);
+    const sleepList = dailySummaries.map(s => s.sleepHours || 0);
+    
+    const trendChart = document.getElementById("trendChart");
+    if (trendChart && scoresList.length > 0) {
+      drawLineChart(trendChart, scoresList.slice(-12));
+    }
+    
+    const sleepChart = document.getElementById("sleepChart");
+    if (sleepChart && sleepList.length > 0) {
+      drawLineChart(sleepChart, sleepList.slice(-7), "#8d7aff");
+    }
+  }
+  
+  const weeklyRateEl = document.querySelector(".hero-card strong");
+  if (weeklyRateEl) {
+    weeklyRateEl.dataset.count = completionRate;
+    weeklyRateEl.textContent = `${completionRate}%`;
+  }
+  
+  const chipA = document.querySelector(".chip-a strong");
+  if (chipA) {
+    chipA.dataset.count = completionRate;
+    chipA.textContent = `${completionRate}%`;
+  }
+}
+
+function syncGroupOwnerDataToLocal(ownerData) {
+  const store = JSON.parse(localStorage.getItem("nudgeWebTools") || "{}");
+  let changed = false;
+  if (ownerData.webToolsState) {
+    for (const k of ["challenge", "template"]) {
+      if (ownerData.webToolsState[k] && JSON.stringify(store[k]) !== JSON.stringify(ownerData.webToolsState[k])) {
+        store[k] = ownerData.webToolsState[k];
+        changed = true;
+      }
+    }
+  }
+  if (ownerData.webToolsCollection) {
+    for (const k of ["studySchedules"]) {
+      if (ownerData.webToolsCollection[k] && JSON.stringify(store[k]) !== JSON.stringify(ownerData.webToolsCollection[k])) {
+        store[k] = ownerData.webToolsCollection[k];
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    localStorage.setItem("nudgeWebTools", JSON.stringify(store));
+    if (typeof window.renderSavedList === 'function') {
+      window.renderSavedList("[data-study-list]", "studySchedules", "<article><strong>尚未排程</strong><span>新增讀書時段後會出現在這裡。</span></article>");
+    }
+  }
+}
+
+function formatDate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function getMonday5AMOfThisWeek(date) {
+  const day = date.getDay(); // 0 is Sunday, 1 is Monday, ..., 6 is Saturday
+  const weekday = day === 0 ? 7 : day;
+  const daysToSubtract = weekday - 1;
+  const monday = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  monday.setDate(monday.getDate() - daysToSubtract);
+  return new Date(monday.getFullYear(), monday.getMonth(), monday.getDate(), 5, 0, 0);
+}
+
+function calculateWeeklyTaskCompletionRateWeb(weekStartMonday, dailySummaries) {
+  let completed = 0;
+  let total = 0;
+  for (let i = 0; i < 7; i++) {
+    const curDate = new Date(weekStartMonday.getTime());
+    curDate.setDate(curDate.getDate() + i);
+    const dateStr = formatDate(curDate);
+    const summary = dailySummaries.find(s => s.date === dateStr);
+    if (summary) {
+      completed += (summary.completedTasks || 0);
+      total += (summary.totalTasks || 0);
+    }
+  }
+  if (total === 0) return 0.0;
+  return (completed / total) * 100.0;
+}
+
+function checkWeeklyPlanetSettlementWeb(data, activeUserId) {
+  if (!db || !activeUserId) return;
+  const now = new Date();
+  const currentMonday5AM = getMonday5AMOfThisWeek(now);
+  
+  // The target completed settlement Monday is the last Monday 5:00 AM before now
+  const targetSettlementMonday = now < currentMonday5AM
+      ? new Date(currentMonday5AM.getTime() - 7 * 24 * 60 * 60 * 1000)
+      : currentMonday5AM;
+
+  let nextWeekStartMonday;
+  const lastSettledStr = data.lastSettledWeekMonday;
+  const dailySummaries = data.dailySummaries || [];
+  
+  if (!lastSettledStr) {
+    if (dailySummaries.length > 0) {
+      const sorted = [...dailySummaries].sort((a, b) => a.date.localeCompare(b.date));
+      const firstParts = sorted[0].date.split('-');
+      const firstDate = new Date(parseInt(firstParts[0]), parseInt(firstParts[1]) - 1, parseInt(firstParts[2]));
+      nextWeekStartMonday = getMonday5AMOfThisWeek(firstDate);
+    } else {
+      nextWeekStartMonday = new Date(getMonday5AMOfThisWeek(now).getTime() - 7 * 24 * 60 * 60 * 1000);
+    }
+  } else {
+    const lastParts = lastSettledStr.split('-');
+    const lastSettled = new Date(parseInt(lastParts[0]), parseInt(lastParts[1]) - 1, parseInt(lastParts[2]), 5, 0, 0);
+    nextWeekStartMonday = new Date(lastSettled.getTime() + 7 * 24 * 60 * 60 * 1000);
+  }
+
+  let changed = false;
+  let planetCount = typeof data.planetCount === 'number' ? data.planetCount : 0;
+  let unlockedPlanets = data.unlockedPlanets || ["新手星球"];
+  let weeklyPlanetEarned = data.weeklyPlanetEarned || false;
+  let lastSettledWeekMonday = lastSettledStr || "";
+  
+  while (nextWeekStartMonday < targetSettlementMonday || nextWeekStartMonday.getTime() === targetSettlementMonday.getTime()) {
+    const weeklyRate = calculateWeeklyTaskCompletionRateWeb(nextWeekStartMonday, dailySummaries);
+    if (weeklyRate >= 70.0) {
+      planetCount += 1;
+      weeklyPlanetEarned = true;
+      
+      const planetsPool = ["綠洲星球", "熔岩星球", "冰雪星球", "沙漠星球", "水晶星球", "暗物質星球"];
+      const available = planetsPool.filter(p => !unlockedPlanets.includes(p));
+      if (available.length > 0) {
+        const randomPlanet = available[Math.floor(Math.random() * available.length)];
+        unlockedPlanets.push(randomPlanet);
+      }
+    } else {
+      weeklyPlanetEarned = false;
+    }
+    
+    lastSettledWeekMonday = formatDate(nextWeekStartMonday);
+    changed = true;
+    
+    nextWeekStartMonday.setDate(nextWeekStartMonday.getDate() + 7);
+  }
+  
+  if (changed) {
+    db.collection("users").doc(activeUserId).update({
+      planetCount: planetCount,
+      unlockedPlanets: unlockedPlanets,
+      weeklyPlanetEarned: weeklyPlanetEarned,
+      lastSettledWeekMonday: lastSettledWeekMonday,
+      updatedAt: new Date().toISOString()
+    }).then(() => {
+      console.log("Weekly settlement executed on web successfully.");
+    }).catch(err => {
+      console.error("Failed to update settlement on web:", err);
+    });
+  }
+}
+
+function updateLitPlanets(planetCount) {
+  for (let i = 1; i <= 12; i++) {
+    const sat = document.querySelector(".mission-satellite.s" + i);
+    if (sat) {
+      if (i <= planetCount) {
+        sat.classList.add("active");
+      } else {
+        sat.classList.remove("active", "hidden-comet", "hidden-moon", "hidden-blackhole");
+      }
+    }
+  }
+
+  for (let i = 1; i <= 24; i++) {
+    const gal = document.querySelector(".galaxy-planet.g" + i);
+    if (gal) {
+      if (i <= planetCount) {
+        gal.classList.add("active");
+      } else {
+        gal.classList.remove("active", "hidden-comet", "hidden-moon", "hidden-blackhole");
+      }
+    }
+  }
+
+  for (let i = 1; i <= 12; i++) {
+    const uni = document.querySelector(".universe-planet.u" + i);
+    if (uni) {
+      if (i <= planetCount - 24) {
+        uni.classList.add("active");
+      } else {
+        uni.classList.remove("active", "hidden-explosion");
+      }
+    }
+  }
+}
+
+function listenToUser(userId) {
+  if (!db) return;
+  listenToRequests(userId);
+  
+  // Check if profile page is viewing a friend's profile
+  if (document.body.dataset.page === "profile") {
+    const urlParams = new URLSearchParams(window.location.search);
+    const viewUserId = urlParams.get('userId');
+    const viewNudgeId = urlParams.get('nudgeId');
+    
+    if (viewUserId && viewUserId !== userId) {
+      // Load friend profile by UID
+      db.collection("users").doc(viewUserId).get().then(snap => {
+        if (snap.exists) {
+          try { renderWebProfilePage(snap.data(), true, viewUserId); } catch(e) { console.error("Friend profile render error:", e); }
+        }
+      });
+    } else if (viewNudgeId) {
+      // Load friend profile by Nudge ID
+      db.collection("users").where("myNudgeId", "==", viewNudgeId.toUpperCase()).limit(1).get().then(snap => {
+        if (!snap.empty) {
+          const friendDoc = snap.docs[0];
+          try { renderWebProfilePage(friendDoc.data(), true, friendDoc.id); } catch(e) { console.error("Friend profile render error:", e); }
+        }
+      });
+    }
+  }
+  db.collection("users").doc(userId).onSnapshot((docSnap) => {
+    if (!docSnap.exists) {
+      // Create a default user document in Firestore!
+      const defaultData = {
+        id: userId,
+        nickname: "新自律使用者",
+        myNudgeId: 'NDG_' + userId.substring(0, 6).toUpperCase(),
+        username: 'NDG_' + userId.substring(0, 6).toUpperCase(),
+        disciplineCoins: 100,
+        planetCount: 0,
+        weeklyPlanetEarned: false,
+        tasks: [],
+        dailySummaries: [],
+        accentColor: "purple",
+        signature: "今天也在穩定前進",
+        profileTitleBadgeKey: "",
+        userRole: "personal",
+        isStudying: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      db.collection("users").doc(userId).set(defaultData).then(() => {
+        console.log("Default user document created for newly signed-in user:", userId);
+      }).catch(err => {
+        console.error("Failed to create default user document:", err);
+      });
+      return;
+    }
+    const data = docSnap.data();
+    
+    updateSidebarProfile(data);
+
+    if (document.body.dataset.page === "profile") {
+      // Check if we're viewing own profile or a friend's profile via query params
+      const urlParams = new URLSearchParams(window.location.search);
+      const viewUserId = urlParams.get('userId');
+      const viewNudgeId = urlParams.get('nudgeId');
+      
+      if ((viewUserId && viewUserId !== userId) || viewNudgeId) {
+        // Visitor mode: load friend's profile from Firestore (handled separately below)
+        // Don't overwrite own data into profile page
+      } else {
+        try { renderWebProfilePage(data, false, userId); } catch(e) { console.error("Profile page render error:", e); }
+      }
+    }
+
+    // Guardian-child sync
+    const isGuardian = data.userRole === "guardian";
+    const isLinked = data.webToolsState?.guardianInviteStatus?.status === 'linked';
+    const childNudgeId = data.webToolsState?.guardianInvite?.relativeId;
+    
+    if (isGuardian && isLinked && childNudgeId) {
+      const childNudgeIdUpper = childNudgeId.trim().toUpperCase();
+      if (currentChildNudgeId !== childNudgeIdUpper) {
+        currentChildNudgeId = childNudgeIdUpper;
+        if (childDocSub) childDocSub();
+        childDocSub = db.collection("users")
+          .where("username", "==", childNudgeIdUpper)
+          .limit(1)
+          .onSnapshot((childQuerySnap) => {
+            if (!childQuerySnap.empty) {
+              const childDoc = childQuerySnap.docs[0];
+              const childData = childDoc.data();
+              window.linkedChildUid = childDoc.id;
+              updateParentDashboardWithChildData(childData);
+            }
+          }, (err) => console.error("Child doc sub error:", err));
+      }
+    } else {
+      currentChildNudgeId = null;
+      window.linkedChildUid = null;
+      if (childDocSub) {
+        childDocSub();
+        childDocSub = null;
+      }
+    }
+
+    // Group member sync
+    const isGroupMember = ["group", "enterprise", "tutor", "school"].includes(data.userRole) && !data.isGroupOwner;
+    const groupId = data.groupId;
+    if (isGroupMember && groupId) {
+      if (currentGroupIdListener !== groupId) {
+        currentGroupIdListener = groupId;
+        if (groupOwnerSub) groupOwnerSub();
+        groupOwnerSub = db.collection("users")
+          .where("groupId", "==", groupId)
+          .where("isGroupOwner", "==", true)
+          .limit(1)
+          .onSnapshot((ownerQuerySnap) => {
+            if (!ownerQuerySnap.empty) {
+              const ownerDoc = ownerQuerySnap.docs[0];
+              const ownerData = ownerDoc.data();
+              syncGroupOwnerDataToLocal(ownerData);
+            }
+          }, (err) => console.error("Group owner sub error:", err));
+      }
+    } else {
+      currentGroupIdListener = null;
+      if (groupOwnerSub) {
+        groupOwnerSub();
+        groupOwnerSub = null;
+      }
+    }
+    
+    const dailySummaries = data.dailySummaries || [];
+    const tasks = data.tasks || [];
+    currentUserTasks = tasks;
+    currentUserDailySummaries = dailySummaries;
+    
+    // Settle weekly planets and update lit visual planet orbits
+    try {
+      checkWeeklyPlanetSettlementWeb(data, userId);
+    } catch (e) {
+      console.error("Weekly settlement run error on web:", e);
+    }
+    
+    try {
+      updateLitPlanets(data.planetCount || 0);
+    } catch (e) {
+      console.error("Failed to update lit planets from count:", e);
+    }
+    
+    // 如果任務為空，自動在 Firestore 初始化預設自律任務，以達成雙端靜態任務同步
+    if (tasks.length === 0) {
+      initializeDefaultTasksInFirestore(userId);
+      return;
+    }
+    
+    // 📡 網頁端自動偵測任務在手機端達成！
+    if (previousTasksState !== null) {
+      tasks.forEach(task => {
+        const prev = previousTasksState.find(pt => pt.id === task.id);
+        if (prev && !prev.isDone && !prev.done && (task.isDone || task.done)) {
+          toast(`📡 星艦通訊：偵測到手機完成任務【${task.title || task.name}】，網頁星球已同步點亮建築與發射衛星！`);
+        }
+      });
+    }
+    previousTasksState = JSON.parse(JSON.stringify(tasks));
+    
+    if (dailySummaries.length > 0) {
+      const scores = dailySummaries.map(s => s.disciplineScore || 0);
+      const sleepHours = dailySummaries.map(s => s.sleepHours || 0);
+      
+      const trendChart = $("#trendChart");
+      if (trendChart && scores.length > 0) {
+        drawLineChart(trendChart, scores.slice(-12));
+      }
+      
+      const sleepChart = $("#sleepChart");
+      if (sleepChart && sleepHours.length > 0) {
+        drawLineChart(sleepChart, sleepHours.slice(-7), "#8d7aff");
+      }
+    }
+    
+    let completionRate = 0;
+    if (tasks.length > 0) {
+      const completedCount = tasks.filter(t => t.isDone || t.done).length;
+      completionRate = Math.round((completedCount / tasks.length) * 100);
+      const chipA = $(".chip-a strong");
+      if (chipA) {
+        chipA.dataset.count = completionRate;
+        chipA.textContent = `${completionRate}%`;
+      }
+      
+      const prosperityElement = document.querySelector(".hero-card strong");
+      if (prosperityElement) {
+        if (document.body.dataset.page === "operations") {
+          const coins = typeof data.disciplineCoins === 'number' ? data.disciplineCoins : 0;
+          prosperityElement.dataset.count = coins;
+          prosperityElement.textContent = `${coins}`;
+        } else if (document.body.dataset.page === "planet") {
+          prosperityElement.dataset.count = completionRate;
+          prosperityElement.textContent = `${completionRate}`;
+        }
+      }
+      
+      if (document.body.dataset.page === "planet") {
+        if (typeof window.bindFirestoreMissions === 'function') {
+          window.bindFirestoreMissions(tasks);
+        }
+      }
+    }
+    
+    if (document.body.dataset.page === "planet") {
+      const todaySummary = dailySummaries[dailySummaries.length - 1] || {};
+      const completedCount = tasks.filter(t => t.isDone || t.done).length;
+      const syncData = {
+        completedTasks: completedCount || 3,
+        focusMinutes: todaySummary.focusMinutes || (data.focusSeconds ? Math.floor(data.focusSeconds/60) : 40),
+        sleepHours: todaySummary.sleepHours || 7.0,
+        activeFriendsCount: data.friends ? data.friends.length : 2
+      };
+      if (typeof update3DPlanet === 'function') {
+        update3DPlanet(syncData);
+      }
+    }
+
+    // Propagate user, health, and focus stats to local python Flask server
+    syncToFlaskServer(data, dailySummaries, tasks);
+    
+    // 📡 Web端自動偵測並同步來自手機 App 建立的膠囊、信件、家長狀態等
+    let store = JSON.parse(localStorage.getItem("nudgeWebTools") || "{}");
+    let changed = false;
+    if (data.webToolsState) {
+      for (const k in data.webToolsState) {
+        if (JSON.stringify(store[k]) !== JSON.stringify(data.webToolsState[k])) {
+          store[k] = data.webToolsState[k];
+          changed = true;
+        }
+      }
+    }
+    if (data.webToolsCollection) {
+      for (const k in data.webToolsCollection) {
+        if (JSON.stringify(store[k]) !== JSON.stringify(data.webToolsCollection[k])) {
+          store[k] = data.webToolsCollection[k];
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      localStorage.setItem("nudgeWebTools", JSON.stringify(store));
+      if (typeof window.renderSavedList === 'function') {
+        window.renderSavedList("[data-capsule-list]", "capsules", "<article><strong>尚未保存</strong><span>建立第一個時間膠囊後會出現在這裡。</span></article>");
+        window.renderSavedList("[data-encourage-list]", "encouragements", "<article><strong>尚未送出</strong><span>送出鼓勵卡後會出現在這裡。</span></article>");
+        window.renderSavedList("[data-study-list]", "studySchedules", "<article><strong>尚未排程</strong><span>新增讀書時段後會出現在這裡。</span></article>");
+      }
+    }
+  });
+}
+
+function parseTaskDueDateStart(dueDate) {
+  if (!dueDate) return null;
+  if (typeof dueDate.toDate === "function") {
+    const date = dueDate.toDate();
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  }
+  if (typeof dueDate === "string") {
+    const match = dueDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) {
+      return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    }
+  }
+  const parsed = new Date(dueDate);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+}
+
+function isDeadlineTaskReadyForWeb(task) {
+  const taskType = task.taskType || "fixed";
+  if (taskType !== "deadline") return true;
+
+  const due = parseTaskDueDateStart(task.dueDate);
+  if (!due) return false;
+
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return today >= due;
+}
+
+window.bindFirestoreMissions = function(tasks) {
+  const list = document.getElementById("dynamicMissionList");
+  if (!list) return;
+  
+  list.innerHTML = "";
+  tasks.slice(0, 36).forEach((task, index) => {
+    const title = task.title || task.name || "自律任務";
+    const done = task.isDone || task.done || false;
+    const isDeadlineTask = (task.taskType || "fixed") === "deadline";
+    const deadlineReady = isDeadlineTaskReadyForWeb(task);
+    const canToggle = !isDeadlineTask || deadlineReady || done;
+    const taskId = task.id || "";
+    const sId = "s" + (index + 1);
+    
+    let taskType = "general";
+    if (/(專案|期末|大考|挑戰)/.test(title)) {
+      taskType = "skyscraper";
+    } else if (/(書|讀|作業|考試|專注|報告)/.test(title)) {
+      taskType = "study";
+    } else if (/(健康|水|睡|運動|步)/.test(title)) {
+      taskType = "health";
+    }
+
+    list.innerHTML += `
+      <li class="mission-item" data-task-id="${taskId}">
+        <label>
+          <input type="checkbox" class="mission-check" data-satellite="${sId}" data-index="${index}" data-task-id="${taskId}" data-task-type="${taskType}" ${done ? 'checked' : ''} ${canToggle ? '' : 'disabled'} />
+          <span>${title}</span>
+        </label>
+        <div class="mission-meta">
+          <div class="energy-bar-container">
+            <div class="energy-bar" style="width: ${done ? '100%' : '60%'}; background: ${done ? '#00ffcc' : '#f59e0b'};"></div>
+          </div>
+          <div class="mission-actions" style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 11px; color: ${done ? '#00ffcc' : 'rgba(255,255,255,0.4)'}; font-weight: 700;">
+              ${done ? '✅ 已同步完成' : isDeadlineTask && !deadlineReady ? '📅 尚未到驗收日' : '⏳ 行動中'}
+            </span>
+            <button class="cyber-btn delete-mission-btn" data-task-id="${taskId}" style="font-size: 10px; padding: 2px 6px; border-color: rgba(239, 68, 68, 0.4); color: #ef4444; background: transparent; cursor: pointer; border-radius: 4px; box-shadow: none;">刪除</button>
+          </div>
+        </div>
+      </li>
+    `;
+
+    // Toggle active class on satellites in real-time
+    const sat = document.querySelector("." + sId);
+    const plot = document.querySelector("." + sId.replace("s", "p"));
+    const gal = document.querySelector(".g" + (index + 1));
+    const uni = document.querySelector(".u" + (index - 23));
+
+    if (done) {
+      if (plot) {
+        plot.classList.add("built");
+        plot.classList.add("built-" + taskType);
+      }
+    } else {
+      if (plot) {
+        plot.classList.remove("built", "built-study", "built-health", "built-general", "built-skyscraper");
+      }
+    }
+  });
+
+  const checks = list.querySelectorAll(".mission-check");
+  checks.forEach((check) => {
+    check.addEventListener("change", (e) => {
+      const taskId = e.target.dataset.taskId;
+      const isChecked = e.target.checked;
+      const activeUserId = localStorage.getItem("nudgeActiveDemoUserId");
+      if (!activeUserId || !db) return;
+      
+      const docRef = db.collection("users").doc(activeUserId);
+      docRef.get().then((docSnap) => {
+        if (!docSnap.exists) return;
+        const data = docSnap.data();
+        const currentTasks = data.tasks || [];
+        const selectedTask = currentTasks.find(t => t.id === taskId);
+        if (isChecked && selectedTask && !isDeadlineTaskReadyForWeb(selectedTask)) {
+          e.target.checked = false;
+          toast("截止日任務尚未到驗收日，暫時不能勾選完成");
+          return;
+        }
+        const updatedTasks = currentTasks.map(t => {
+          if (t.id === taskId) {
+            return {
+              ...t,
+              isDone: isChecked,
+              done: isChecked,
+              completedAt: isChecked ? new Date().toISOString() : null,
+              updatedAt: new Date().toISOString()
+            };
+          }
+          return t;
+        });
+        docRef.update({ tasks: updatedTasks }).then(() => {
+          toast(isChecked ? "任務已標記為完成！" : "任務取消完成");
+        });
+      });
+    });
+  });
+
+  // 🗑️ 刪除任務事件綁定與同步手機
+  const deleteBtns = list.querySelectorAll(".delete-mission-btn");
+  deleteBtns.forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const taskId = e.target.dataset.taskId;
+      const activeUserId = localStorage.getItem("nudgeActiveDemoUserId");
+      if (!activeUserId || !db) return;
+      
+      if (confirm("確定要刪除此自律任務並同步至手機端嗎？")) {
+        const docRef = db.collection("users").doc(activeUserId);
+        docRef.get().then((docSnap) => {
+          if (!docSnap.exists) return;
+          const data = docSnap.data();
+          const currentTasks = data.tasks || [];
+          const updatedTasks = currentTasks.filter(t => t.id !== taskId);
+          docRef.update({ tasks: updatedTasks }).then(() => {
+            toast("任務已成功刪除並同步至手機！");
+          });
+        });
+      }
+    });
+  });
+
+  checks.forEach((check, index) => {
+    const taskType = check.dataset.taskType || "general";
+    const sId = "s" + (index + 1);
+    const plot = $("." + sId.replace("s", "p"));
+
+    if (check.checked) {
+      if (plot) {
+        plot.classList.add("built");
+        plot.classList.add("built-" + taskType);
+      }
+    } else {
+      if (plot) plot.classList.remove("built", "built-study", "built-health", "built-general", "built-skyscraper");
+    }
+  });
+};
+
+function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+function addFirestoreTask(taskTitle) {
+  const activeUserId = localStorage.getItem("nudgeActiveDemoUserId");
+  if (!activeUserId || !db) {
+    console.warn("Firebase not initialized or user missing");
+    return;
+  }
+  const docRef = db.collection("users").doc(activeUserId);
+  docRef.get().then((docSnap) => {
+    if (docSnap.exists) {
+      const data = docSnap.data();
+      const currentTasks = data.tasks || [];
+      const newTask = {
+        id: generateUUID(),
+        userId: activeUserId,
+        title: taskTitle,
+        category: "自定義",
+        taskType: "fixed",
+        priority: "medium",
+        isDone: false,
+        isSystemTask: false,
+        isAutoTracked: false,
+        sourceType: "manual",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      
+      currentTasks.push(newTask);
+      docRef.update({ tasks: currentTasks }).then(() => {
+        toast(`已成功新增任務：${taskTitle}`);
+      });
+    }
+  });
+}
+
+function completeFirestoreTask(taskId) {
+  const activeUserId = localStorage.getItem("nudgeActiveDemoUserId");
+  if (!activeUserId || !db) {
+    console.warn("Firebase not initialized or user missing");
+    return;
+  }
+  const docRef = db.collection("users").doc(activeUserId);
+  docRef.get().then((docSnap) => {
+    if (docSnap.exists) {
+      const data = docSnap.data();
+      const currentTasks = data.tasks || [];
+      
+      // Try finding by exact ID first
+      let taskIndex = currentTasks.findIndex(t => t.id === taskId);
+      
+      // If not found, try fuzzy matching by title
+      if (taskIndex === -1) {
+        taskIndex = currentTasks.findIndex(t => t.title === taskId || t.title.includes(taskId) || taskId.includes(t.title));
+      }
+      
+      if (taskIndex !== -1) {
+        if (currentTasks[taskIndex].isDone || currentTasks[taskIndex].done) {
+          toast(`📡 星艦回報：任務【${currentTasks[taskIndex].title}】早已是完成狀態！`);
+          return;
+        }
+        
+        currentTasks[taskIndex].isDone = true;
+        currentTasks[taskIndex].done = true;
+        currentTasks[taskIndex].completedAt = new Date().toISOString();
+        currentTasks[taskIndex].updatedAt = new Date().toISOString();
+        
+        docRef.update({ tasks: currentTasks }).then(() => {
+          toast(`📡 星艦回報：AI 成功為您標記完成任務【${currentTasks[taskIndex].title}】！`);
+        });
+      } else {
+        toast(`📡 星艦警告：找不到與「${taskId}」匹配的任務。`);
+      }
+    }
+  });
+}
+
+const defaultFirestoreTasks = [
+  {
+    id: "task_default_1",
+    userId: "",
+    title: "完成 2 小時讀書",
+    category: "讀書",
+    taskType: "fixed",
+    priority: "high",
+    isDone: false,
+    isSystemTask: false,
+    isAutoTracked: false,
+    sourceType: "manual"
+  },
+  {
+    id: "task_default_2",
+    userId: "",
+    title: "步行超過 6000 步",
+    category: "運動",
+    taskType: "fixed",
+    priority: "medium",
+    isDone: false,
+    isSystemTask: false,
+    isAutoTracked: false,
+    sourceType: "manual"
+  },
+  {
+    id: "task_default_3",
+    userId: "",
+    title: "運動 30 分鐘",
+    category: "運動",
+    taskType: "fixed",
+    priority: "medium",
+    isDone: false,
+    isSystemTask: false,
+    isAutoTracked: false,
+    sourceType: "manual"
+  },
+  {
+    id: "task_default_4",
+    userId: "",
+    title: "晚上 11:30 前睡覺",
+    category: "睡眠",
+    taskType: "fixed",
+    priority: "high",
+    isDone: false,
+    isSystemTask: false,
+    isAutoTracked: false,
+    sourceType: "manual"
+  },
+  {
+    id: "task_default_5",
+    userId: "",
+    title: "準備期中報告",
+    category: "讀書",
+    taskType: "deadline",
+    priority: "high",
+    isDone: false,
+    isSystemTask: false,
+    isAutoTracked: false,
+    sourceType: "manual"
+  }
+];
+
+function initializeDefaultTasksInFirestore(userId) {
+  if (!db) return;
+  const docRef = db.collection("users").doc(userId);
+  docRef.get().then((docSnap) => {
+    if (docSnap.exists) {
+      const data = docSnap.data();
+      if (!data.tasks || data.tasks.length === 0) {
+        const initializedTasks = defaultFirestoreTasks.map(t => ({
+          ...t,
+          userId: userId,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }));
+        docRef.update({ tasks: initializedTasks }).then(() => {
+          console.log("Initialized default static tasks in Firestore for user: " + userId);
+        });
+      }
+    }
+  });
+}
+
+function showWebProfileEditModal(data) {
+  let overlay = document.getElementById("globalProfileEditModal");
+  if (!overlay) {
+    // Inject styles
+    if (!document.getElementById("globalProfileEditStyles")) {
+      const style = document.createElement("style");
+      style.id = "globalProfileEditStyles";
+      style.textContent = `
+        .global-profile-edit-overlay {
+          position: fixed;
+          inset: 0;
+          background: rgba(10, 15, 30, 0.6);
+          backdrop-filter: blur(12px) saturate(180%);
+          -webkit-backdrop-filter: blur(12px) saturate(180%);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 10000;
+          opacity: 0;
+          pointer-events: none;
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .global-profile-edit-overlay.active {
+          opacity: 1;
+          pointer-events: auto;
+        }
+        .global-profile-edit-modal {
+          background: rgba(22, 28, 45, 0.9);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          padding: 2rem;
+          border-radius: 24px;
+          width: 100%;
+          max-width: 440px;
+          box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+          transform: scale(0.9) translateY(20px);
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+          color: #fff;
+          font-family: inherit;
+        }
+        .global-profile-edit-overlay.active .global-profile-edit-modal {
+          transform: scale(1) translateY(0);
+        }
+        .global-profile-edit-modal h2 {
+          margin-top: 0;
+          margin-bottom: 1.5rem;
+          font-size: 1.5rem;
+          font-weight: 800;
+          background: linear-gradient(135deg, #fff 30%, rgba(255,255,255,0.6) 100%);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+        }
+        .global-form-group {
+          margin-bottom: 1.25rem;
+          text-align: left;
+        }
+        .global-form-group label {
+          display: block;
+          font-size: 0.85rem;
+          margin-bottom: 0.5rem;
+          color: rgba(255, 255, 255, 0.6);
+          font-weight: 600;
+        }
+        .global-form-group input, .global-form-group select {
+          width: 100%;
+          padding: 0.75rem 1rem;
+          border-radius: 10px;
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          background: rgba(255, 255, 255, 0.05);
+          color: #fff;
+          box-sizing: border-box;
+          font-size: 0.95rem;
+          outline: none;
+          transition: border-color 0.2s;
+        }
+        .global-form-group input:focus, .global-form-group select:focus {
+          border-color: var(--c-primary, #7c6ae6);
+        }
+        .color-swatch-group {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 12px;
+          margin-top: 8px;
+        }
+        .color-swatch {
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          cursor: pointer;
+          border: 2px solid transparent;
+          transition: all 0.2s;
+          box-sizing: border-box;
+        }
+        .color-swatch:hover {
+          transform: scale(1.15);
+        }
+        .color-swatch.active {
+          border-color: #fff;
+          box-shadow: 0 0 10px var(--swatch-color);
+        }
+        .global-profile-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 1rem;
+          margin-top: 2rem;
+        }
+        .global-profile-btn-cancel {
+          background: transparent;
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          color: rgba(255, 255, 255, 0.8);
+          padding: 0.6rem 1.4rem;
+          border-radius: 10px;
+          cursor: pointer;
+          font-weight: 600;
+          transition: all 0.2s;
+        }
+        .global-profile-btn-cancel:hover {
+          background: rgba(255, 255, 255, 0.05);
+          color: #fff;
+        }
+        .global-profile-btn-submit {
+          background: var(--c-primary, #7c6ae6);
+          border: none;
+          color: white;
+          padding: 0.6rem 1.4rem;
+          border-radius: 10px;
+          cursor: pointer;
+          font-weight: 700;
+          transition: all 0.2s;
+        }
+        .global-profile-btn-submit:hover {
+          opacity: 0.9;
+          transform: translateY(-1px);
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    const badgeDefinitions = [
+      { key: 'task_starter', name: '任務起步者' },
+      { key: 'focus_beginner', name: '專注新手' },
+      { key: 'focus_streak', name: '專注連續者' },
+      { key: 'task_streak', name: '任務連續者' },
+      { key: 'sleep_guard', name: '睡眠守護者' },
+      { key: 'step_master', name: '步數達人' },
+      { key: 'steady_progress', name: '穩定前進' },
+      { key: 'score_keeper', name: '高分維持' },
+      { key: 'coin_earner', name: '門檻達人' },
+      { key: 'auto_tracker', name: '自動追蹤者' },
+      { key: 'health_sync', name: '健康同步者' },
+      { key: 'health_task', name: '健康任務實踐者' }
+    ];
+
+    const unlockedKeys = data.unlockedBadgeDates ? Object.keys(data.unlockedBadgeDates) : [];
+    const unlockedBadges = badgeDefinitions.filter(b => unlockedKeys.includes(b.key));
+    const currentTitleKey = data.profileTitleBadgeKey || "";
+
+    const colorOptions = [
+      { name: 'purple', hex: '#7C6AE6', label: '紫色' },
+      { name: 'blue', hex: '#4F8CFF', label: '藍色' },
+      { name: 'teal', hex: '#14B8A6', label: '青色' },
+      { name: 'green', hex: '#10B981', label: '綠色' },
+      { name: 'orange', hex: '#F59E0B', label: '橘色' },
+      { name: 'pink', hex: '#EC4899', label: '粉色' },
+      { name: 'red', hex: '#EF4444', label: '紅色' },
+      { name: 'indigo', hex: '#6366F1', label: '靛藍' }
+    ];
+
+    const currentAccent = data.accentColor || 'purple';
+
+    let badgesSelectHtml = `<option value="">不使用稱號</option>`;
+    unlockedBadges.forEach(b => {
+      badgesSelectHtml += `<option value="${b.key}" ${currentTitleKey === b.key ? 'selected' : ''}>${b.name}</option>`;
+    });
+
+    let swatchesHtml = '';
+    colorOptions.forEach(opt => {
+      swatchesHtml += `
+        <div class="color-swatch ${currentAccent === opt.name ? 'active' : ''}" 
+             data-color="${opt.name}" 
+             style="background: ${opt.hex}; --swatch-color: ${opt.hex};" 
+             title="${opt.label}"></div>
+      `;
+    });
+
+    const modalHtml = `
+      <div class="global-profile-edit-overlay" id="globalProfileEditModal">
+        <div class="global-profile-edit-modal">
+          <h2>⚙️ 編輯個人名片</h2>
+          <div class="global-form-group">
+            <label>暱稱</label>
+            <input type="text" id="editProfileNickname" value="${data.nickname || ''}" placeholder="請輸入自律暱稱" maxLength="12"/>
+          </div>
+          <div class="global-form-group">
+            <label>個性簽名</label>
+            <input type="text" id="editProfileSignature" value="${data.signature || ''}" placeholder="今天也在穩定前進" maxLength="40"/>
+          </div>
+          <div class="global-form-group">
+            <label>專屬頭像主題色</label>
+            <div class="color-swatch-group" id="editProfileColors">
+              ${swatchesHtml}
+            </div>
+            <input type="hidden" id="editProfileSelectedColor" value="${currentAccent}"/>
+          </div>
+          <div class="global-form-group">
+            <label>名片稱號（僅能選用已解鎖徽章）</label>
+            <select id="editProfileTitle">
+              ${badgesSelectHtml}
+            </select>
+          </div>
+          <div class="global-profile-actions">
+            <button class="global-profile-btn-cancel" onclick="document.getElementById('globalProfileEditModal').classList.remove('active')">取消</button>
+            <button class="global-profile-btn-submit" id="saveProfileEditBtn">儲存名片</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+    // Setup color swatch click events
+    const swatches = document.querySelectorAll("#editProfileColors .color-swatch");
+    swatches.forEach(sw => {
+      sw.addEventListener("click", function() {
+        swatches.forEach(s => s.classList.remove("active"));
+        this.classList.add("active");
+        document.getElementById("editProfileSelectedColor").value = this.getAttribute("data-color");
+      });
+    });
+
+    document.getElementById("saveProfileEditBtn").addEventListener("click", function() {
+      const nickname = document.getElementById("editProfileNickname").value.trim();
+      const signature = document.getElementById("editProfileSignature").value.trim();
+      const accentColor = document.getElementById("editProfileSelectedColor").value;
+      const titleBadgeKey = document.getElementById("editProfileTitle").value;
+
+      if (!nickname) {
+        toast("請填寫有效的暱稱");
+        return;
+      }
+
+      const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+      if (activeUserId && typeof db !== "undefined") {
+        db.collection("users").doc(activeUserId).update({
+          nickname: nickname,
+          signature: signature || "今天也在穩定前進",
+          accentColor: accentColor,
+          profileTitleBadgeKey: titleBadgeKey,
+          updatedAt: new Date().toISOString()
+        }).then(() => {
+          toast("個人名片更新成功！ ✨");
+          document.getElementById('globalProfileEditModal').classList.remove('active');
+          window.location.reload();
+        }).catch(err => {
+          console.error("更新名片失敗：", err);
+          toast("更新失敗，請稍後再試");
+        });
+      }
+    });
+  }
+
+  // Display modal
+  overlay = document.getElementById("globalProfileEditModal");
+  // Update form inputs to current state in case they were updated
+  document.getElementById("editProfileNickname").value = data.nickname || '';
+  document.getElementById("editProfileSignature").value = data.signature || '';
+  document.getElementById("editProfileSelectedColor").value = data.accentColor || 'purple';
+  
+  const swatchesEl = document.querySelectorAll("#editProfileColors .color-swatch");
+  swatchesEl.forEach(sw => {
+    if (sw.getAttribute("data-color") === (data.accentColor || 'purple')) {
+      sw.classList.add("active");
+    } else {
+      sw.classList.remove("active");
+    }
+  });
+
+  const selectEl = document.getElementById("editProfileTitle");
+  if (selectEl) selectEl.value = data.profileTitleBadgeKey || "";
+
+  overlay.classList.add("active");
+}
+
+function renderWebProfilePage(data, isFriend, friendUid) {
+  const nickname = data.nickname || "自律使用者";
+  const signature = data.signature || "今天也在穩定前進";
+  const nudgeId = data.myNudgeId || data.username || (friendUid ? 'NDG_' + friendUid.substring(0, 6).toUpperCase() : "NDG-Guest");
+  const coins = typeof data.disciplineCoins === 'number' ? data.disciplineCoins : 0;
+  const planets = typeof data.planetCount === 'number' ? data.planetCount : 0;
+  const profileTitleBadgeKey = data.profileTitleBadgeKey || "";
+  const unlockedBadgeDates = data.unlockedBadgeDates || {};
+
+  let accentColor = "#7c6ae6";
+  if (data.accentColor) {
+    if (typeof data.accentColor === 'number') {
+      const hex = (data.accentColor & 0x00FFFFFF).toString(16).padStart(6, '0');
+      accentColor = `#${hex}`;
+    } else {
+      const colorMap = {
+        'purple': '#7C6AE6',
+        'blue': '#4F8CFF',
+        'teal': '#14B8A6',
+        'green': '#10B981',
+        'orange': '#F59E0B',
+        'pink': '#EC4899',
+        'red': '#EF4444',
+        'indigo': '#6366F1'
+      };
+      accentColor = colorMap[data.accentColor] || data.accentColor;
+    }
+  }
+
+  // Update DOM components
+  const mainAvatar = document.getElementById("profileMainAvatar");
+  if (mainAvatar) {
+    if (data.avatarProfile && typeof data.avatarProfile.avatarIconIndex === 'number') {
+      mainAvatar.innerHTML = `<img src="assets/avatar/icons/icon_${data.avatarProfile.avatarIconIndex}.png" style="width:100%; height:100%; object-fit:cover; border-radius:50%;" />`;
+    } else {
+      mainAvatar.textContent = nickname.substring(0, 1).toUpperCase();
+    }
+    mainAvatar.style.background = accentColor;
+    mainAvatar.style.boxShadow = `0 10px 25px ${accentColor}40`;
+  }
+  const miniAvatar = document.getElementById("profileMiniAvatar");
+  if (miniAvatar) {
+    if (data.avatarProfile && typeof data.avatarProfile.avatarIconIndex === 'number') {
+      miniAvatar.innerHTML = `<img src="assets/avatar/icons/icon_${data.avatarProfile.avatarIconIndex}.png" style="width:100%; height:100%; object-fit:cover; border-radius:50%;" />`;
+    } else {
+      miniAvatar.textContent = nickname.substring(0, 1).toUpperCase();
+    }
+    miniAvatar.style.background = accentColor;
+  }
+  const mainName = document.getElementById("profileMainName");
+  if (mainName) mainName.textContent = nickname;
+
+  const mainSignature = document.getElementById("profileMainSignature");
+  if (mainSignature) mainSignature.textContent = `"${signature}"`;
+
+  const nodeNudgeId = document.getElementById("profileNudgeId");
+  if (nodeNudgeId) nodeNudgeId.textContent = nudgeId;
+
+  const coinsVal = document.getElementById("profileCoinsVal");
+  if (coinsVal) coinsVal.textContent = coins;
+
+  const planetsVal = document.getElementById("profilePlanetsVal");
+  if (planetsVal) planetsVal.textContent = planets;
+
+  // Cover photo banner gradient
+  const coverBanner = document.getElementById("profileCoverBanner");
+  if (coverBanner) {
+    coverBanner.style.background = `linear-gradient(135deg, ${accentColor} 0%, #1e144a 50%, #03050a 100%)`;
+  }
+
+  // Online status calculation
+  const onlineStatusNode = document.getElementById("profileOnlineStatus");
+  if (onlineStatusNode) {
+    let onlineStatus = "⚪ 離線";
+    let statusColor = "#64748b";
+    if (data.isStudying) {
+      onlineStatus = "🟢 正在專注中";
+      statusColor = "#10b981";
+    } else {
+      if (!isFriend) {
+        onlineStatus = "🟢 在線上";
+        statusColor = "#10b981";
+      } else {
+        let lastActive = null;
+        if (data.updatedAt) {
+          if (typeof data.updatedAt.toDate === 'function') {
+            lastActive = data.updatedAt.toDate();
+          } else if (data.updatedAt.seconds) {
+            lastActive = new Date(data.updatedAt.seconds * 1000);
+          } else {
+            lastActive = new Date(data.updatedAt);
+          }
+        }
+        const now = new Date();
+        if (lastActive && (now - lastActive < 5 * 60 * 1000)) { // 5 minutes
+          onlineStatus = "🟢 在線上";
+          statusColor = "#10b981";
+        } else {
+          onlineStatus = "⚪ 離線";
+          statusColor = "#64748b";
+        }
+      }
+    }
+    onlineStatusNode.textContent = onlineStatus;
+    onlineStatusNode.style.color = statusColor;
+  }
+
+  // Active badge/title
+  const badgeNames = {
+    'task_starter': '任務起步者',
+    'focus_beginner': '專注新手',
+    'focus_streak': '專注連續者',
+    'task_streak': '任務連續者',
+    'sleep_guard': '睡眠守護者',
+    'step_master': '步數達人',
+    'steady_progress': '穩定前進',
+    'score_keeper': '高分維持',
+    'coin_earner': '門檻達人',
+    'auto_tracker': '自動追蹤者',
+    'health_sync': '健康同步者',
+    'health_task': '健康任務實踐者'
+  };
+  const badgeName = badgeNames[profileTitleBadgeKey] || "";
+  const mainBadge = document.getElementById("profileMainBadge");
+  if (mainBadge) {
+    if (badgeName) {
+      mainBadge.textContent = `🏆 ${badgeName}`;
+      mainBadge.style.display = "inline-flex";
+    } else {
+      mainBadge.style.display = "none";
+    }
+  }
+
+  // Badges grid
+  const badgesGrid = document.getElementById("profileUnlockedBadges");
+  if (badgesGrid) {
+    const badgeIcons = {
+      'task_starter': '🚀',
+      'focus_beginner': '🎯',
+      'focus_streak': '🔥',
+      'task_streak': '⚡',
+      'sleep_guard': '🌙',
+      'step_master': '👟',
+      'steady_progress': '📈',
+      'score_keeper': '🎖️',
+      'coin_earner': '🪙',
+      'auto_tracker': '📡',
+      'health_sync': '❤️',
+      'health_task': '💪'
+    };
+    const badgeDefinitions = [
+      { key: 'task_starter', name: '任務起步者' },
+      { key: 'focus_beginner', name: '專注新手' },
+      { key: 'focus_streak', name: '專注連續者' },
+      { key: 'task_streak', name: '任務連續者' },
+      { key: 'sleep_guard', name: '睡眠守護者' },
+      { key: 'step_master', name: '步數達人' },
+      { key: 'steady_progress', name: '穩定前進' },
+      { key: 'score_keeper', name: '高分維持' },
+      { key: 'coin_earner', name: '門檻達人' },
+      { key: 'auto_tracker', name: '自動追蹤者' },
+      { key: 'health_sync', name: '健康同步者' },
+      { key: 'health_task', name: '健康任務實踐者' }
+    ];
+    const unlockedKeys = Object.keys(unlockedBadgeDates);
+    const html = badgeDefinitions.map(b => {
+      const isUnlocked = unlockedKeys.includes(b.key);
+      return `
+        <div class="badge-item" style="opacity: ${isUnlocked ? 1 : 0.25}; cursor: ${isUnlocked ? 'pointer' : 'default'};" title="${isUnlocked ? '已解鎖' : '未解鎖'}">
+          <span class="badge-icon">${badgeIcons[b.key] || '🏆'}</span>
+          <span class="badge-name" style="color: ${isUnlocked ? '#fff' : 'var(--muted)'};">${b.name}</span>
+        </div>
+      `;
+    }).join('');
+    badgesGrid.innerHTML = html;
+  }
+
+  // Edit card button and planet jump button
+  const editBtn = document.getElementById("profileEditCardBtn");
+  const saveBtn = document.getElementById("profileSaveCardBtn");
+  const cancelBtn = document.getElementById("profileCancelEditBtn");
+  const likeBtn = document.getElementById("profileLikeBtn");
+  const jumpPlanetBtn = document.getElementById("profileJumpPlanetBtn");
+  const visitorBanner = document.getElementById("profileVisitorBanner");
+  const createPostCard = document.querySelector(".fb-create-post-card");
+
+  if (isFriend) {
+    // Visitor mode: hide edit, show like, show visitor banner, show jump planet button
+    if (editBtn) editBtn.style.display = "none";
+    if (saveBtn) saveBtn.style.display = "none";
+    if (cancelBtn) cancelBtn.style.display = "none";
+    if (likeBtn) {
+      likeBtn.style.display = "inline-flex";
+      likeBtn.onclick = function() {
+        this.textContent = "✅ 已按讚";
+        this.disabled = true;
+        this.style.opacity = "0.6";
+        toast("👍 已給 " + (data.nickname || "這位使用者") + " 按讚！");
+      };
+    }
+    if (createPostCard) createPostCard.style.display = "none";
+    if (visitorBanner) {
+      visitorBanner.style.display = "block";
+      const visitorName = document.getElementById("profileVisitorName");
+      if (visitorName) visitorName.textContent = data.nickname || "自律使用者";
+    }
+    if (jumpPlanetBtn) {
+      jumpPlanetBtn.style.display = "inline-flex";
+      jumpPlanetBtn.onclick = () => {
+        const uid = friendUid || (new URLSearchParams(window.location.search)).get('userId') || '';
+        window.location.href = uid ? `planet.html?userId=${uid}` : 'planet.html';
+      };
+    }
+  } else {
+    // Own profile mode: show edit, hide like, hide visitor banner, hide jump planet button
+    if (editBtn) editBtn.style.display = "inline-flex";
+    if (likeBtn) likeBtn.style.display = "none";
+    if (createPostCard) createPostCard.style.display = "flex";
+    if (visitorBanner) visitorBanner.style.display = "none";
+    if (jumpPlanetBtn) jumpPlanetBtn.style.display = "none";
+
+    // Setup Inline Edit Elements reference
+    const mainNameEl = document.getElementById("profileMainName");
+    const mainSigEl = document.getElementById("profileMainSignature");
+    const mainBadgeEl = document.getElementById("profileMainBadge");
+    
+    const nicknameInput = document.getElementById("editProfileNicknameInline");
+    const signatureInput = document.getElementById("editProfileSignatureInline");
+    const badgeSelect = document.getElementById("editProfileTitleInline");
+    const colorPickerContainer = document.getElementById("inlineColorPickerContainer");
+    const colorSwatchesEl = document.getElementById("inlineColorPickerSwatches");
+    const selectedColorInput = document.getElementById("editProfileSelectedColorInline");
+
+    const colorOptions = [
+      { name: 'purple', hex: '#7C6AE6', label: '紫色' },
+      { name: 'blue', hex: '#4F8CFF', label: '藍色' },
+      { name: 'teal', hex: '#14B8A6', label: '青色' },
+      { name: 'green', hex: '#10B981', label: '綠色' },
+      { name: 'orange', hex: '#F59E0B', label: '橘色' },
+      { name: 'pink', hex: '#EC4899', label: '粉色' },
+      { name: 'red', hex: '#EF4444', label: '紅色' },
+      { name: 'indigo', hex: '#6366F1', label: '靛藍' }
+    ];
+    const currentAccent = data.accentColor || 'purple';
+    if (selectedColorInput) selectedColorInput.value = currentAccent;
+
+    // Render Swatches
+    if (colorSwatchesEl) {
+      colorSwatchesEl.innerHTML = colorOptions.map(opt => `
+        <div class="color-swatch ${currentAccent === opt.name ? 'active' : ''}" 
+             data-color="${opt.name}" 
+             style="background: ${opt.hex}; --swatch-color: ${opt.hex};" 
+             title="${opt.label}"></div>
+      `).join('');
+
+      const swatches = colorSwatchesEl.querySelectorAll(".color-swatch");
+      swatches.forEach(sw => {
+        sw.addEventListener("click", function() {
+          swatches.forEach(s => s.classList.remove("active"));
+          this.classList.add("active");
+          if (selectedColorInput) selectedColorInput.value = this.getAttribute("data-color");
+        });
+      });
+    }
+
+    // Populate unlocked titles
+    if (badgeSelect) {
+      const badgeDefinitions = [
+        { key: 'task_starter', name: '任務起步者' },
+        { key: 'focus_beginner', name: '專注新手' },
+        { key: 'focus_streak', name: '專注連續者' },
+        { key: 'task_streak', name: '任務連續者' },
+        { key: 'sleep_guard', name: '睡眠守護者' },
+        { key: 'step_master', name: '步數達人' },
+        { key: 'steady_progress', name: '穩定前進' },
+        { key: 'score_keeper', name: '高分維持' },
+        { key: 'coin_earner', name: '門檻達人' },
+        { key: 'auto_tracker', name: '自動追蹤者' },
+        { key: 'health_sync', name: '健康同步者' },
+        { key: 'health_task', name: '健康任務實踐者' }
+      ];
+      const unlockedKeys = Object.keys(unlockedBadgeDates);
+      const unlockedBadges = badgeDefinitions.filter(b => unlockedKeys.includes(b.key));
+      
+      let badgesSelectHtml = `<option value="">不使用稱號</option>`;
+      unlockedBadges.forEach(b => {
+        badgesSelectHtml += `<option value="${b.key}" ${profileTitleBadgeKey === b.key ? 'selected' : ''}>${b.name}</option>`;
+      });
+      badgeSelect.innerHTML = badgesSelectHtml;
+    }
+
+    // Wire up inline edit toggle
+    if (editBtn) {
+      editBtn.onclick = () => {
+        if (mainNameEl) mainNameEl.style.display = "none";
+        if (mainSigEl) mainSigEl.style.display = "none";
+        if (mainBadgeEl) mainBadgeEl.style.display = "none";
+
+        if (nicknameInput) {
+          nicknameInput.value = nickname;
+          nicknameInput.style.display = "block";
+        }
+        if (signatureInput) {
+          signatureInput.value = signature;
+          signatureInput.style.display = "block";
+        }
+        if (badgeSelect) badgeSelect.style.display = "block";
+        if (colorPickerContainer) colorPickerContainer.style.display = "flex";
+
+        editBtn.style.display = "none";
+        if (saveBtn) saveBtn.style.display = "inline-flex";
+        if (cancelBtn) cancelBtn.style.display = "inline-flex";
+      };
+    }
+
+    // Cancel inline editing
+    if (cancelBtn) {
+      cancelBtn.onclick = () => {
+        if (mainNameEl) mainNameEl.style.display = "";
+        if (mainSigEl) mainSigEl.style.display = "";
+        if (badgeName && mainBadgeEl) mainBadgeEl.style.display = "inline-flex";
+
+        if (nicknameInput) nicknameInput.style.display = "none";
+        if (signatureInput) signatureInput.style.display = "none";
+        if (badgeSelect) badgeSelect.style.display = "none";
+        if (colorPickerContainer) colorPickerContainer.style.display = "none";
+
+        if (editBtn) editBtn.style.display = "inline-flex";
+        if (saveBtn) saveBtn.style.display = "none";
+        if (cancelBtn) cancelBtn.style.display = "none";
+      };
+    }
+
+    // Save inline editing
+    if (saveBtn) {
+      saveBtn.onclick = () => {
+        const newNickname = nicknameInput.value.trim();
+        const newSignature = signatureInput.value.trim();
+        const newAccentColor = selectedColorInput.value;
+        const newTitleBadgeKey = badgeSelect.value;
+
+        if (!newNickname) {
+          toast("請填寫有效的暱稱");
+          return;
+        }
+
+        const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+        if (activeUserId && typeof db !== "undefined") {
+          saveBtn.disabled = true;
+          saveBtn.textContent = "儲存中...";
+          db.collection("users").doc(activeUserId).update({
+            nickname: newNickname,
+            signature: newSignature || "今天也在穩定前進",
+            accentColor: newAccentColor,
+            profileTitleBadgeKey: newTitleBadgeKey,
+            updatedAt: new Date().toISOString()
+          }).then(() => {
+            toast("個人名片更新成功！ ✨");
+            window.location.reload();
+          }).catch(err => {
+             console.error("更新名片失敗：", err);
+             toast("更新失敗，請稍後再試");
+             saveBtn.disabled = false;
+             saveBtn.textContent = "💾 儲存名片";
+          });
+        }
+      };
+    }
+  }
+
+  // Dynamic Timeline Feed
+  const feedContainer = document.getElementById("profileTimelineFeed");
+  if (feedContainer) {
+    const dailySummaries = data.dailySummaries || [];
+    const welcomePost = data.welcomePost || {};
+    const customPosts = data.customPosts || [];
+    const tasks = data.tasks || [];
+    const completedCount = tasks.filter(t => t.isDone || t.done).length;
+    
+    // Check if the current user viewing the profile is the owner
+    const activeUserId = localStorage.getItem("nudgeActiveDemoUserId") || "an_nudge";
+    const profileUserId = new URLSearchParams(window.location.search).get('userId') || new URLSearchParams(window.location.search).get('id') || activeUserId;
+    const isOwner = (activeUserId === profileUserId);
+
+    let allPosts = [];
+
+    dailySummaries.forEach((summary, idx) => {
+      if (summary.isDeleted) return;
+      allPosts.push({
+        id: summary.date,
+        isWelcome: false,
+        timestamp: new Date(summary.date).getTime() || 0,
+        dateStr: summary.date || `第 ${dailySummaries.length - idx} 天`,
+        content: summary.customText || getSummaryText(summary),
+        likes: summary.likes || 0,
+        likedBy: summary.likedBy || [],
+        comments: summary.comments || [],
+        metrics: {
+          focusMin: summary.focusMinutes || 0,
+          sleepHr: summary.sleepHours || 0,
+          stepCount: summary.steps || 0,
+          completedCount: summary.completedTasks || 0
+        }
+      });
+    });
+
+    customPosts.forEach(cp => {
+      if (cp.isDeleted) return;
+      const d = new Date(cp.timestamp);
+      const dateStr = d.toLocaleDateString('zh-TW', { month: 'short', day: 'numeric', hour: '2-digit', minute:'2-digit' });
+      allPosts.push({
+        id: cp.id,
+        isWelcome: false,
+        isCustom: true,
+        timestamp: cp.timestamp,
+        dateStr: dateStr,
+        content: cp.content,
+        likes: cp.likes || 0,
+        likedBy: cp.likedBy || [],
+        comments: cp.comments || [],
+        metrics: null
+      });
+    });
+
+    if (!welcomePost.isDeleted) {
+      allPosts.push({
+        id: 'welcome',
+        isWelcome: true,
+        timestamp: 0, // Always oldest
+        dateStr: '剛剛',
+        content: welcomePost.customText || '今天正式啟用了 Nudge 自律名片！目前已設定自律目標，並準備在手機 App 端同步專注、睡眠與步數進度，開啟自律宇宙的全新生活！ 🪐✨',
+        likes: welcomePost.likes || 0,
+        likedBy: welcomePost.likedBy || [],
+        comments: welcomePost.comments || [],
+        metrics: null
+      });
+    }
+
+    allPosts.sort((a, b) => b.timestamp - a.timestamp);
+    let postsHtml = '';
+
+    function getSummaryText(summary) {
+      const score = summary.disciplineScore || 0;
+      if (score >= 90) return `今天自律狀態爆表！達成了 ${score} 的高分！特別是完成了所有核心挑戰，感覺充滿能量！ 🚀✨`;
+      if (score >= 75) return `今天的自律進度很穩定，得分為 ${score}。番茄鐘專注與健康運動都有乖乖執行，繼續保持這個節奏！ 💪`;
+      return `今天自律得分為 ${score}。雖然有些項目稍微落後，但沒關係，自律是個長跑，明天再接再厲！ 🌟`;
+    }
+
+    if (allPosts.length > 0) {
+      allPosts.forEach(post => {
+        let metricsHtml = '';
+        if (post.metrics) {
+          metricsHtml = `
+            <div class="fb-post-metrics-grid">
+              <div class="fb-metric-pill focus"><span class="icon">⏱️</span><div class="fb-metric-details"><span class="fb-metric-label">專注時間</span><span class="fb-metric-val">${post.metrics.focusMin} 分鐘</span></div></div>
+              <div class="fb-metric-pill sleep"><span class="icon">🌙</span><div class="fb-metric-details"><span class="fb-metric-label">睡眠時數</span><span class="fb-metric-val">${post.metrics.sleepHr} 小時</span></div></div>
+              <div class="fb-metric-pill steps"><span class="icon">👣</span><div class="fb-metric-details"><span class="fb-metric-label">今日步數</span><span class="fb-metric-val">${post.metrics.stepCount} 步</span></div></div>
+              <div class="fb-metric-pill tasks"><span class="icon">✅</span><div class="fb-metric-details"><span class="fb-metric-label">完成任務</span><span class="fb-metric-val">${post.metrics.completedCount} 個任務</span></div></div>
+            </div>
+          `;
+        }
+
+        let commentsHtml = '';
+        if (post.comments.length > 0) {
+          commentsHtml = `<div class="fb-post-comments-section">`;
+          post.comments.forEach((c, cIndex) => {
+            const avatarChar = c.author ? c.author.substring(0, 1).toUpperCase() : '👤';
+            const activeUserName = localStorage.getItem("nudgeActiveDemoUserName") || "訪客";
+            const canDeleteComment = isOwner || c.author === activeUserName;
+            const deleteBtnHtml = canDeleteComment ? `<div style="font-size: 12px; color: var(--muted); cursor: pointer; margin-left: auto; align-self: flex-start; padding: 4px;" onclick="window.deleteComment('${post.id}', ${post.isWelcome}, ${post.isCustom}, ${cIndex})">✕</div>` : '';
+
+            commentsHtml += `
+              <div class="fb-post-comment-item">
+                <div class="fb-post-comment-avatar" style="background: var(--page-accent, #7c6ae6)">${avatarChar}</div>
+                <div class="fb-post-comment-content" style="display: flex; gap: 8px;">
+                  <div style="flex-grow: 1;">
+                    <div class="fb-post-comment-author">${c.author}</div>
+                    <div class="fb-post-comment-text">${c.text}</div>
+                  </div>
+                  ${deleteBtnHtml}
+                </div>
+              </div>
+            `;
+          });
+          commentsHtml += `</div>`;
+        }
+
+        const dropdownHtml = isOwner ? `
+          <div class="fb-post-dropdown-container">
+            <div style="color: var(--muted); font-size: 18px; cursor: pointer; padding: 0 8px;" onclick="window.togglePostMenu('${post.id}')">•••</div>
+            <div class="fb-post-dropdown-menu" id="post-menu-${post.id}">
+              <div class="fb-post-dropdown-item" onclick="window.editPost('${post.id}', ${post.isWelcome}, ${post.isCustom})">✏️ 修改貼文</div>
+              <div class="fb-post-dropdown-item delete" onclick="window.deletePost('${post.id}', ${post.isWelcome}, ${post.isCustom})">🗑️ 刪除貼文</div>
+            </div>
+          </div>
+        ` : ``;
+
+        const hasLiked = post.likedBy.includes(activeUserId === profileUserId ? (localStorage.getItem("nudgeActiveDemoUserName") || "訪客") : "訪客"); // Wait, activeUserName is what's used
+        const activeUserName = localStorage.getItem("nudgeActiveDemoUserName") || "訪客";
+        const isLiked = post.likedBy.includes(activeUserName);
+        const likeBtnStyle = isLiked ? 'color: var(--page-accent, #a855f7); font-weight: bold; background: rgba(168, 85, 247, 0.1);' : '';
+        const likeBtnText = isLiked ? '👍 已讚' : '👍 讚';
+
+        postsHtml += `
+          <article class="fb-post-card">
+            <div class="fb-post-header">
+              <div class="fb-post-author-info">
+                <div class="fb-mini-avatar" style="background: ${accentColor};">${nickname.substring(0, 1).toUpperCase()}</div>
+                <div>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span class="fb-post-author-name">${nickname}</span>
+                    ${badgeName ? `<span class="fb-profile-badge" style="font-size: 10px; padding: 2px 8px;">🏆 ${badgeName}</span>` : ''}
+                  </div>
+                  <span class="fb-post-time">${post.dateStr}</span>
+                </div>
+              </div>
+              ${dropdownHtml}
+            </div>
+            <div class="fb-post-content" id="post-content-${post.id}">${post.content}</div>
+            ${metricsHtml}
+            <div class="fb-post-feedback-summary">
+              <span>👍 ${post.likes} 人按讚</span>
+              <span>${post.comments.length} 則留言 • 0 次分享</span>
+            </div>
+            <div class="fb-post-feedback-actions">
+              <button class="fb-post-action-btn" style="${likeBtnStyle}" onclick="window.toggleLikePost('${post.id}', ${post.isWelcome}, ${post.isCustom})">${likeBtnText}</button>
+              <button class="fb-post-action-btn" onclick="window.addCommentToPost('${post.id}', ${post.isWelcome}, ${post.isCustom})">💬 留言</button>
+              <button class="fb-post-action-btn" onclick="window.sharePost('${post.id}')">↪️ 分享</button>
+            </div>
+            ${commentsHtml}
+          </article>
+        `;
+      });
+    } else {
+      postsHtml = `<div style="text-align: center; color: var(--muted); padding: 40px;">目前沒有任何動態。</div>`;
+    }
+
+    feedContainer.innerHTML = postsHtml;
+  }
+}

@@ -12,8 +12,14 @@ import 'tasks_page.dart';
 class TodayAdvicePage extends StatelessWidget {
   final VoidCallback? onOpenTasks;
   final ValueChanged<int>? onNavigate;
+  final bool showAppBar;
 
-  const TodayAdvicePage({super.key, this.onOpenTasks, this.onNavigate});
+  const TodayAdvicePage({
+    super.key,
+    this.onOpenTasks,
+    this.onNavigate,
+    this.showAppBar = true,
+  });
 
   DateTime? _parseDate(String? value) {
     if (value == null || value.isEmpty) return null;
@@ -232,6 +238,17 @@ class TodayAdvicePage extends StatelessWidget {
     );
   }
 
+  void _showAICoachDialog(BuildContext context, AppState appState) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return _AICoachBottomSheet(appState: appState);
+      },
+    );
+  }
+
   void _runPrimaryAction(
     BuildContext context,
     AppState appState,
@@ -421,6 +438,7 @@ class TodayAdvicePage extends StatelessWidget {
     final weightedTask = weightedRecommendations.isEmpty
         ? null
         : weightedRecommendations.first;
+    final mainLineTasks = weightedRecommendations.take(3).toList();
 
     final mainAdviceTitle = urgentDeadlineTask != null
         ? '今天最優先'
@@ -431,9 +449,7 @@ class TodayAdvicePage extends StatelessWidget {
               ? '先完成「${topTask['title']}」，這是一個中優先級的固定任務。'
               : '今天可以先新增一個明確任務，讓系統開始幫你建立節奏。');
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('今日建議')),
-      body: ListView(
+    final listBody = ListView(
         padding: const EdgeInsets.all(AppUI.pagePadding),
         children: [
           Container(
@@ -484,7 +500,71 @@ class TodayAdvicePage extends StatelessWidget {
             ),
           ),
           const SizedBox(height: AppUI.sectionGap),
-          if (weightedTask != null) ...[
+          Card(
+            shape: AppUI.cardShape(),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                gradient: LinearGradient(
+                  colors: [
+                    accentColor.withValues(alpha: 0.12),
+                    accentColor.withValues(alpha: 0.03),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(AppUI.innerPadding),
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 26,
+                      backgroundColor: accentColor.withValues(alpha: 0.18),
+                      child: Icon(Icons.psychology_outlined, size: 28, color: accentColor),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'AI 智能自律導師',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: primaryText,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '一鍵診斷歷史健康與專注的盲點關聯性',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: secondaryText,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: accentColor,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      onPressed: () => _showAICoachDialog(context, appState),
+                      child: const Text('諮詢', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: AppUI.cardGap),
+          if (mainLineTasks.isNotEmpty) ...[
             Card(
               shape: AppUI.cardShape(),
               child: Padding(
@@ -494,10 +574,10 @@ class TodayAdvicePage extends StatelessWidget {
                   children: [
                     Row(
                       children: [
-                        Icon(Icons.insights_outlined, color: accentColor),
+                        Icon(Icons.route_outlined, color: accentColor),
                         const SizedBox(width: 8),
                         Text(
-                          '下一個最值得做',
+                          '今日主線任務',
                           style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.bold,
@@ -506,22 +586,34 @@ class TodayAdvicePage extends StatelessWidget {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 14),
+                    const SizedBox(height: 6),
                     Text(
-                      weightedTask.title,
+                      '先處理這 ${mainLineTasks.length} 件，今天就會有清楚推進感。',
                       style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: primaryText,
+                        color: secondaryText,
+                        height: 1.4,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '${appState.taskRewardReasonForTask(weightedTask)}。完成後約 +${appState.taskPotentialScoreForTask(weightedTask)} 分，若跨過門檻可拿 +3 枚自律幣。',
-                      style: TextStyle(
-                        fontSize: 13,
-                        height: 1.5,
-                        color: secondaryText,
+                    const SizedBox(height: 14),
+                    ...mainLineTasks.asMap().entries.map(
+                      (entry) => Padding(
+                        padding: EdgeInsets.only(
+                          bottom: entry.key == mainLineTasks.length - 1
+                              ? 0
+                              : 10,
+                        ),
+                        child: _MainQuestCard(
+                          index: entry.key + 1,
+                          task: entry.value,
+                          score: appState.taskPotentialScoreForTask(
+                            entry.value,
+                          ),
+                          reason: appState.taskRewardReasonForTask(entry.value),
+                          accentColor: accentColor,
+                          onStart: () =>
+                              _runPrimaryAction(context, appState, entry.value),
+                        ),
                       ),
                     ),
                   ],
@@ -670,7 +762,13 @@ class TodayAdvicePage extends StatelessWidget {
             ),
           ),
         ],
-      ),
+      );
+
+    if (!showAppBar) return listBody;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('今日建議')),
+      body: listBody,
     );
   }
 }
@@ -714,6 +812,144 @@ class _DetailPill extends StatelessWidget {
               fontSize: 14,
               fontWeight: FontWeight.bold,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MainQuestCard extends StatelessWidget {
+  final int index;
+  final TaskModel task;
+  final int score;
+  final String reason;
+  final Color accentColor;
+  final VoidCallback onStart;
+
+  const _MainQuestCard({
+    required this.index,
+    required this.task,
+    required this.score,
+    required this.reason,
+    required this.accentColor,
+    required this.onStart,
+  });
+
+  IconData get _icon {
+    switch (task.sourceType) {
+      case TaskSourceType.focusMinutes:
+        return Icons.timer_outlined;
+      case TaskSourceType.sleepHours:
+      case TaskSourceType.steps:
+      case TaskSourceType.exerciseMinutes:
+        return Icons.health_and_safety_outlined;
+      case TaskSourceType.studyRoom:
+        return Icons.groups_2_outlined;
+      case TaskSourceType.manual:
+      case TaskSourceType.system:
+      case null:
+        return Icons.checklist_rounded;
+    }
+  }
+
+  String get _actionLabel {
+    switch (task.sourceType) {
+      case TaskSourceType.focusMinutes:
+        return '開始專注';
+      case TaskSourceType.sleepHours:
+      case TaskSourceType.steps:
+      case TaskSourceType.exerciseMinutes:
+        return '去健康頁';
+      case TaskSourceType.studyRoom:
+        return '進入房間';
+      case TaskSourceType.manual:
+      case TaskSourceType.system:
+      case null:
+        return '看詳情';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final primaryText = AppUI.textPrimaryOf(context);
+    final secondaryText = AppUI.textSecondaryOf(context);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppUI.surfaceVariantOf(context),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Theme.of(context).dividerColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: AppUI.softCardOf(context, accentColor),
+                child: Icon(_icon, color: accentColor),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '$index. ${task.title}',
+                      style: TextStyle(
+                        color: primaryText,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      reason,
+                      style: TextStyle(
+                        color: secondaryText,
+                        fontSize: 12,
+                        height: 1.35,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              _DetailPill(label: '完成後', value: '+$score 分', color: accentColor),
+              _DetailPill(
+                label: '自律幣',
+                value: score > 0 ? '跨門檻 +3' : '額外規則',
+                color: AppUI.orange,
+              ),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: accentColor,
+                  foregroundColor: Colors.white,
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
+                  ),
+                ),
+                onPressed: onStart,
+                icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                label: Text(_actionLabel),
+              ),
+            ],
           ),
         ],
       ),
@@ -792,6 +1028,154 @@ class _AdviceActionCard extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AICoachBottomSheet extends StatefulWidget {
+  final AppState appState;
+  const _AICoachBottomSheet({required this.appState});
+
+  @override
+  State<_AICoachBottomSheet> createState() => _AICoachBottomSheetState();
+}
+
+class _AICoachBottomSheetState extends State<_AICoachBottomSheet> {
+  bool _loading = true;
+  String _advice = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchAdvice();
+  }
+
+  Future<void> _fetchAdvice() async {
+    final response = await widget.appState.askAICoach();
+    if (mounted) {
+      setState(() {
+        _advice = response;
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final primaryText = AppUI.textPrimaryOf(context);
+    final secondaryText = AppUI.textSecondaryOf(context);
+    final accentColor = widget.appState.currentIconColor;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.cardColor,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.80,
+      ),
+      child: SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 48,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: theme.dividerColor,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                CircleAvatar(
+                  backgroundColor: accentColor.withValues(alpha: 0.12),
+                  child: Icon(Icons.psychology_alt_outlined, color: accentColor),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'AI 智能自律導師',
+                        style: TextStyle(
+                          color: primaryText,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        '基於歷史步數、睡眠與專注關聯性診斷',
+                        style: TextStyle(color: secondaryText, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const Divider(height: 28),
+            Expanded(
+              child: _loading
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const SizedBox(
+                            width: 32,
+                            height: 32,
+                            child: CircularProgressIndicator(strokeWidth: 3),
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            '正在分析你過去 7 天的自律數據...',
+                            style: TextStyle(color: secondaryText, fontSize: 14, fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '尋找睡眠、步數與專注之間的盲點關聯...',
+                            style: TextStyle(color: secondaryText, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    )
+                  : SingleChildScrollView(
+                      physics: const BouncingScrollPhysics(),
+                      child: Padding(
+                        padding: const EdgeInsets.only(bottom: 20),
+                        child: Text(
+                          _advice,
+                          style: TextStyle(
+                            color: primaryText,
+                            fontSize: 15,
+                            height: 1.6,
+                          ),
+                        ),
+                      ),
+                    ),
+            ),
+            if (!_loading) ...[
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: accentColor,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                ),
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.check_circle_outline_rounded),
+                label: const Text('好的，我會試著調整', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ],
         ),
       ),
     );

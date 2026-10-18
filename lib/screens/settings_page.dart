@@ -4,9 +4,10 @@ import '../state/app_state.dart';
 import '../theme/app_ui.dart';
 import 'about_page.dart';
 import 'account_page.dart';
+import 'onboarding_page.dart';
 import 'privacy_data_page.dart';
 import 'reminder_center_page.dart';
-
+import '../widgets/role_pill.dart';
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
 
@@ -213,54 +214,6 @@ class SettingsPage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(AppUI.pagePadding),
         children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: AppUI.heroGradient(accentColor),
-            child: Row(
-              children: [
-                Container(
-                  width: 62,
-                  height: 62,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.20),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.settings_outlined,
-                    color: Colors.white,
-                    size: 30,
-                  ),
-                ),
-                const SizedBox(width: 14),
-                const Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '個人化設定',
-                        style: TextStyle(
-                          color: Colors.white70,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      SizedBox(height: 6),
-                      Text(
-                        '調整外觀模式、icon 顏色與 App 顯示方式',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          height: 1.5,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: AppUI.sectionGap),
           _sectionCard(
             context: context,
             title: '帳號與同步',
@@ -301,6 +254,72 @@ class SettingsPage extends StatelessWidget {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const ReminderCenterPage()),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: AppUI.cardGap),
+          _sectionCard(
+            context: context,
+            title: '切換自律角色身份',
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    RolePill(
+                      label: '個人模式',
+                      role: 'personal',
+                      activeRole: appState.userRole,
+                      accentColor: accentColor,
+                      onTap: () => appState.setUserRole('personal'),
+                    ),
+                    const SizedBox(width: 8),
+                    RolePill(
+                      label: '孩子端',
+                      role: 'child',
+                      activeRole: appState.userRole,
+                      accentColor: accentColor,
+                      onTap: () => appState.setUserRole('child'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    RolePill(
+                      label: '家長端',
+                      role: 'guardian',
+                      activeRole: appState.userRole,
+                      accentColor: accentColor,
+                      onTap: () => appState.setUserRole('guardian'),
+                    ),
+                    const SizedBox(width: 8),
+                    RolePill(
+                      label: '團體/企業',
+                      role: 'group',
+                      activeRole: appState.userRole,
+                      accentColor: accentColor,
+                      onTap: () => appState.setUserRole('group'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: AppUI.cardGap),
+          _sectionCard(
+            context: context,
+            title: '初始偏好',
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(Icons.flag_circle_outlined, color: accentColor),
+              title: const Text('重新查看新手引導'),
+              subtitle: const Text('調整目標類型、起步任務、角色、提醒與隱私確認'),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const OnboardingPage()),
                 );
               },
             ),

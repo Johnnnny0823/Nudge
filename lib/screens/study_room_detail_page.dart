@@ -7,6 +7,7 @@ import '../models/task_model.dart';
 import '../state/app_state.dart';
 import '../theme/app_ui.dart';
 import '../widgets/avatar_preview.dart';
+import 'health_page.dart';
 import 'study_room_live_page.dart';
 
 class StudyRoomDetailPage extends StatelessWidget {
@@ -134,6 +135,10 @@ class StudyRoomDetailPage extends StatelessWidget {
   }
 
   String _activeStatusText(StudyRoomData room) {
+    if (_usesExternalProgress(room)) {
+      return '同步中';
+    }
+
     switch (room.roomType) {
       case StudyRoomType.study:
         return '專注中';
@@ -148,16 +153,77 @@ class StudyRoomDetailPage extends StatelessWidget {
     }
   }
 
+  bool _usesExternalProgress(StudyRoomData room) {
+    return room.goalSourceType == TaskSourceType.sleepHours ||
+        room.goalSourceType == TaskSourceType.exerciseMinutes ||
+        room.goalSourceType == TaskSourceType.steps;
+  }
+
+  bool _hasInRoomTimer(StudyRoomData room) {
+    return !_usesExternalProgress(room);
+  }
+
+  String _liveRoomTitle(StudyRoomData room) {
+    return _hasInRoomTimer(room) ? '即時自律房' : '房間同步看板';
+  }
+
+  String _liveRoomSubtitle(StudyRoomData room) {
+    if (!_usesExternalProgress(room)) {
+      return '進入角色房間，開始倒數、聊天、送鼓勵貼圖。';
+    }
+
+    switch (room.roomType) {
+      case StudyRoomType.sleep:
+        return '睡眠時數由健康資料導入，房內負責陪伴、提醒與查看進度。';
+      case StudyRoomType.exercise:
+        return '運動分鐘由健康資料導入，房內用打卡與鼓勵維持節奏。';
+      case StudyRoomType.steps:
+        return '步數由健康資料導入，房內查看排行榜並互相提醒去走走。';
+      case StudyRoomType.study:
+      case StudyRoomType.custom:
+        return '查看同步進度、聊天、送鼓勵貼圖。';
+    }
+  }
+
+  String _liveRoomButtonLabel(
+    StudyRoomData room, {
+    required bool isCurrentUserPending,
+  }) {
+    if (isCurrentUserPending) return '審核中';
+    return _hasInRoomTimer(room) ? '進入' : '查看';
+  }
+
+  String _activityMetricTitle(StudyRoomData room) {
+    return _usesExternalProgress(room) ? '已達標人數' : '進行中人數';
+  }
+
+  IconData _activityMetricIcon(StudyRoomData room) {
+    return _usesExternalProgress(room)
+        ? Icons.verified_outlined
+        : Icons.local_fire_department_outlined;
+  }
+
+  Color _activityMetricColor(StudyRoomData room) {
+    return _usesExternalProgress(room)
+        ? const Color(0xFF0EA5E9)
+        : const Color(0xFF10B981);
+  }
+
+  String _personalGoalText(StudyRoomData room, StudyMemberData member) {
+    if (_usesExternalProgress(room)) return _goalText(room);
+    return _formatHours(member.personalGoalSeconds);
+  }
+
   String _startActionText(StudyRoomData room) {
     switch (room.roomType) {
       case StudyRoomType.study:
         return '開始專注';
       case StudyRoomType.sleep:
-        return '開始睡覺';
+        return '同步睡眠';
       case StudyRoomType.exercise:
-        return '開始運動';
+        return '同步運動';
       case StudyRoomType.steps:
-        return '開始走路';
+        return '同步步數';
       case StudyRoomType.custom:
         return '開始自律';
     }
@@ -179,6 +245,14 @@ class StudyRoomDetailPage extends StatelessWidget {
   }
 
   String _memberStatusText(StudyRoomData room, StudyMemberStatus status) {
+    if (_usesExternalProgress(room)) {
+      return switch (status) {
+        StudyMemberStatus.studying => '同步中',
+        StudyMemberStatus.resting => '已同步達標',
+        StudyMemberStatus.offline => '待同步',
+      };
+    }
+
     switch (status) {
       case StudyMemberStatus.studying:
         return _activeStatusText(room);
@@ -569,6 +643,114 @@ class StudyRoomDetailPage extends StatelessWidget {
     );
   }
 
+  void _showEditRoomRulesDialog(
+    BuildContext context,
+    AppState appState,
+    StudyRoomData room,
+  ) {
+    final rulesController = TextEditingController(text: room.roomRules);
+    final nicknameRuleController = TextEditingController(
+      text: room.nicknameRuleText,
+    );
+    bool nicknameRuleEnabled = room.nicknameRuleEnabled;
+    bool joinQuestionsEnabled = room.joinQuestionsEnabled;
+    final joinQuestionsController = TextEditingController(
+      text: room.joinQuestions.join('\n'),
+    );
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('修改規則'),
+              content: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: rulesController,
+                      maxLines: 4,
+                      decoration: const InputDecoration(
+                        labelText: '房規 / 補充說明',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('啟用暱稱規則'),
+                      value: nicknameRuleEnabled,
+                      onChanged: (v) =>
+                          setDialogState(() => nicknameRuleEnabled = v),
+                    ),
+                    if (nicknameRuleEnabled) ...[
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: nicknameRuleController,
+                        decoration: const InputDecoration(
+                          labelText: '暱稱規則說明',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('啟用加入問題'),
+                      value: joinQuestionsEnabled,
+                      onChanged: (v) =>
+                          setDialogState(() => joinQuestionsEnabled = v),
+                    ),
+                    if (joinQuestionsEnabled) ...[
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: joinQuestionsController,
+                        maxLines: 4,
+                        decoration: const InputDecoration(
+                          labelText: '加入問題（每行一題）',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('取消'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    appState.updateRoomRules(
+                      roomId: room.id,
+                      rules: rulesController.text.trim(),
+                      nicknameRuleEnabled: nicknameRuleEnabled,
+                      nicknameRuleText: nicknameRuleController.text.trim(),
+                      joinQuestionsEnabled: joinQuestionsEnabled,
+                      joinQuestions: joinQuestionsEnabled
+                          ? joinQuestionsController.text
+                                .split('\n')
+                                .map((e) => e.trim())
+                                .where((e) => e.isNotEmpty)
+                                .toList()
+                          : room.joinQuestions,
+                    );
+                    Navigator.pop(context);
+                  },
+                  child: const Text('儲存'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _showEditRoomSettingsDialog(
     BuildContext context,
     AppState appState,
@@ -685,9 +867,11 @@ class StudyRoomDetailPage extends StatelessWidget {
         final trackedValue = _roomTrackedValue(room);
         final trackedValueText = _formatRoomTrackedValue(room, trackedValue);
         final goalText = _goalText(room);
-        final activeCount = approvedMembers
-            .where((m) => m.status == StudyMemberStatus.studying)
-            .length;
+        final activityCount = _usesExternalProgress(room)
+            ? approvedMembers.where((m) => m.hasReachedPersonalGoal).length
+            : approvedMembers
+                  .where((m) => m.status == StudyMemberStatus.studying)
+                  .length;
         final double progress = room.dailyGoalValue <= 0
             ? 0.0
             : (trackedValue / room.dailyGoalValue).clamp(0.0, 1.0).toDouble();
@@ -726,7 +910,7 @@ class StudyRoomDetailPage extends StatelessWidget {
                   Tab(text: '首頁'),
                   Tab(text: '成員'),
                   Tab(text: '排行'),
-                  Tab(text: '規則'),
+                  Tab(text: '設定'),
                 ],
               ),
             ),
@@ -855,7 +1039,7 @@ class StudyRoomDetailPage extends StatelessWidget {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    '即時自律房',
+                                    _liveRoomTitle(room),
                                     style: TextStyle(
                                       fontSize: 17,
                                       fontWeight: FontWeight.bold,
@@ -864,7 +1048,7 @@ class StudyRoomDetailPage extends StatelessWidget {
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
-                                    '進入角色房間，開始倒數、聊天、送鼓勵貼圖。',
+                                    _liveRoomSubtitle(room),
                                     style: TextStyle(
                                       fontSize: 13,
                                       height: 1.35,
@@ -889,7 +1073,12 @@ class StudyRoomDetailPage extends StatelessWidget {
                                     }
                                   : null,
                               icon: const Icon(Icons.login_rounded),
-                              label: Text(isCurrentUserPending ? '審核中' : '進入'),
+                              label: Text(
+                                _liveRoomButtonLabel(
+                                  room,
+                                  isCurrentUserPending: isCurrentUserPending,
+                                ),
+                              ),
                             ),
                           ],
                         ),
@@ -949,10 +1138,10 @@ class StudyRoomDetailPage extends StatelessWidget {
                             const SizedBox(width: 10),
                             Expanded(
                               child: _DashboardMiniInfo(
-                                title: '進行中人數',
-                                value: '$activeCount 人',
-                                icon: Icons.local_fire_department_outlined,
-                                color: const Color(0xFF10B981),
+                                title: _activityMetricTitle(room),
+                                value: '$activityCount 人',
+                                icon: _activityMetricIcon(room),
+                                color: _activityMetricColor(room),
                               ),
                             ),
                             const SizedBox(width: 10),
@@ -972,149 +1161,7 @@ class StudyRoomDetailPage extends StatelessWidget {
                       ),
                     ),
 
-                    const SizedBox(height: AppUI.sectionGap),
 
-                    _SectionHeader(title: '房間公告', subtitle: '這裡顯示房主想提醒大家的內容。'),
-                    const SizedBox(height: AppUI.cardGap),
-
-                    Card(
-                      shape: AppUI.cardShape(),
-                      child: Padding(
-                        padding: const EdgeInsets.all(AppUI.innerPadding),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              room.announcement.isEmpty
-                                  ? '目前還沒有公告，大家可以先照自己的進度前進。'
-                                  : room.announcement,
-                              style: TextStyle(
-                                fontSize: 14,
-                                height: 1.55,
-                                color: primaryText,
-                              ),
-                            ),
-                            if (isOwner) ...[
-                              const SizedBox(height: 14),
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: OutlinedButton.icon(
-                                  onPressed: () => _showEditAnnouncementDialog(
-                                    context,
-                                    appState,
-                                    room,
-                                  ),
-                                  icon: const Icon(Icons.edit_outlined),
-                                  label: const Text('編輯公告'),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: AppUI.sectionGap),
-
-                    _SectionHeader(
-                      title: '今日共同目標',
-                      subtitle: '依照房間類型追蹤今天的共同自律進度。',
-                    ),
-                    const SizedBox(height: AppUI.cardGap),
-
-                    Card(
-                      shape: AppUI.cardShape(),
-                      child: Padding(
-                        padding: const EdgeInsets.all(AppUI.innerPadding),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              room.challengeTitle == '今日房間挑戰'
-                                  ? '今日${_metricName(room)}挑戰'
-                                  : room.challengeTitle,
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                                color: primaryText,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              room.challengeDescription == '一起累積專注時數'
-                                  ? '一起累積 $goalText，完成今天的房間目標。'
-                                  : room.challengeDescription,
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: secondaryText,
-                                height: 1.45,
-                              ),
-                            ),
-                            const SizedBox(height: 14),
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(
-                                AppUI.radiusPill,
-                              ),
-                              child: LinearProgressIndicator(
-                                value: progress,
-                                minHeight: 10,
-                                backgroundColor: AppUI.isDark(context)
-                                    ? const Color(0xFF2A2F3A)
-                                    : const Color(0xFFE5E7EB),
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                  accent,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    '目前進度：${(progress * 100).round()}%',
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w700,
-                                      color: primaryText,
-                                    ),
-                                  ),
-                                ),
-                                Text(
-                                  room.challengeDeadlineLabel,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: secondaryText,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 10),
-                            Text(
-                              '累積 $trackedValueText / 目標 $goalText',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: secondaryText,
-                              ),
-                            ),
-                            if (isOwner) ...[
-                              const SizedBox(height: 14),
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: OutlinedButton.icon(
-                                  onPressed: () => _showSetChallengeDialog(
-                                    context,
-                                    appState,
-                                    room,
-                                  ),
-                                  icon: const Icon(Icons.flag_outlined),
-                                  label: const Text('調整挑戰'),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ),
 
                     const SizedBox(height: AppUI.sectionGap),
 
@@ -1185,7 +1232,7 @@ class StudyRoomDetailPage extends StatelessWidget {
                                       room,
                                       _memberTrackedValue(room, me),
                                     ),
-                                    icon: Icons.timer_outlined,
+                                    icon: _roomTypeIcon(room.roomType),
                                     color: accent,
                                   ),
                                 ),
@@ -1193,7 +1240,7 @@ class StudyRoomDetailPage extends StatelessWidget {
                                 Expanded(
                                   child: _DashboardMiniInfo(
                                     title: '個人目標',
-                                    value: _formatHours(me.personalGoalSeconds),
+                                    value: _personalGoalText(room, me),
                                     icon: Icons.track_changes_outlined,
                                     color: const Color(0xFFF59E0B),
                                   ),
@@ -1201,61 +1248,124 @@ class StudyRoomDetailPage extends StatelessWidget {
                               ],
                             ),
                             const SizedBox(height: 14),
-                            GridView.count(
-                              crossAxisCount: 2,
-                              shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
-                              mainAxisSpacing: 10,
-                              crossAxisSpacing: 10,
-                              childAspectRatio: 2.7,
-                              children: [
-                                _RoomActionButton(
-                                  label: _startActionText(room),
-                                  icon: _startActionIcon(room),
-                                  isPrimary: true,
-                                  onPressed: () {
-                                    appState.updateMyStudyRoomPresence(
-                                      roomId: room.id,
-                                      status: StudyMemberStatus.studying,
-                                      sessionSeconds:
-                                          room.goalSourceType ==
-                                                  TaskSourceType.studyRoom ||
-                                              room.goalSourceType ==
-                                                  TaskSourceType.focusMinutes
-                                          ? 25 * 60
-                                          : 0,
-                                    );
-                                  },
-                                ),
-                                _RoomActionButton(
-                                  label: '休息',
-                                  icon: Icons.free_breakfast_outlined,
-                                  onPressed: () {
-                                    appState.updateMyStudyRoomPresence(
-                                      roomId: room.id,
-                                      status: StudyMemberStatus.resting,
-                                      sessionSeconds: 0,
-                                    );
-                                  },
-                                ),
-                                _RoomActionButton(
-                                  label: '離線',
-                                  icon: Icons.stop_circle_outlined,
-                                  onPressed: () {
-                                    appState.clearMyStudyRoomPresence(room.id);
-                                  },
-                                ),
-                                _RoomActionButton(
-                                  label: '改目標',
-                                  icon: Icons.edit_note_outlined,
-                                  onPressed: () => _showSetPersonalGoalDialog(
-                                    context,
-                                    appState,
-                                    room,
+                            if (_hasInRoomTimer(room))
+                              GridView.count(
+                                crossAxisCount: 2,
+                                shrinkWrap: true,
+                                physics: const NeverScrollableScrollPhysics(),
+                                mainAxisSpacing: 10,
+                                crossAxisSpacing: 10,
+                                childAspectRatio: 2.7,
+                                children: [
+                                  _RoomActionButton(
+                                    label: _startActionText(room),
+                                    icon: _startActionIcon(room),
+                                    isPrimary: true,
+                                    onPressed: () {
+                                      appState.updateMyStudyRoomPresence(
+                                        roomId: room.id,
+                                        status: StudyMemberStatus.studying,
+                                        sessionSeconds: 25 * 60,
+                                      );
+                                    },
                                   ),
+                                  _RoomActionButton(
+                                    label: '休息',
+                                    icon: Icons.free_breakfast_outlined,
+                                    onPressed: () {
+                                      appState.updateMyStudyRoomPresence(
+                                        roomId: room.id,
+                                        status: StudyMemberStatus.resting,
+                                        sessionSeconds: 0,
+                                      );
+                                    },
+                                  ),
+                                  _RoomActionButton(
+                                    label: '離線',
+                                    icon: Icons.stop_circle_outlined,
+                                    onPressed: () {
+                                      appState.clearMyStudyRoomPresence(
+                                        room.id,
+                                      );
+                                    },
+                                  ),
+                                  _RoomActionButton(
+                                    label: '改目標',
+                                    icon: Icons.edit_note_outlined,
+                                    onPressed: () => _showSetPersonalGoalDialog(
+                                      context,
+                                      appState,
+                                      room,
+                                    ),
+                                  ),
+                                ],
+                              )
+                            else
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(12),
+                                decoration: AppUI.softCardOf(context, accent),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Icon(
+                                          Icons.health_and_safety_outlined,
+                                          color: accent,
+                                          size: 20,
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Text(
+                                            '這間房不在房內手動計時，今日${_metricName(room)}會從健康資料同步進來。',
+                                            style: TextStyle(
+                                              fontSize: 13,
+                                              height: 1.45,
+                                              color: primaryText,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Wrap(
+                                      spacing: 10,
+                                      runSpacing: 10,
+                                      children: [
+                                        ElevatedButton.icon(
+                                          onPressed: () {
+                                            Navigator.push(
+                                              context,
+                                              MaterialPageRoute(
+                                                builder: (_) =>
+                                                    const HealthPage(),
+                                              ),
+                                            );
+                                          },
+                                          icon: const Icon(Icons.sync_outlined),
+                                          label: const Text('同步健康資料'),
+                                        ),
+                                        OutlinedButton.icon(
+                                          onPressed: () =>
+                                              _showSetPersonalGoalDialog(
+                                                context,
+                                                appState,
+                                                room,
+                                              ),
+                                          icon: const Icon(
+                                            Icons.edit_note_outlined,
+                                          ),
+                                          label: const Text('改目標'),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
                                 ),
-                              ],
-                            ),
+                              ),
                             if (room.syncTaskEnabled) ...[
                               const SizedBox(height: 10),
                               SizedBox(
@@ -1314,44 +1424,7 @@ class StudyRoomDetailPage extends StatelessWidget {
                       ),
                     ),
 
-                    if (isOwner) ...[
-                      const SizedBox(height: AppUI.sectionGap),
-                      _SectionHeader(
-                        title: '房主管理',
-                        subtitle: '你可以從這裡快速調整房間設定。',
-                      ),
-                      const SizedBox(height: AppUI.cardGap),
-                      Card(
-                        shape: AppUI.cardShape(),
-                        child: Padding(
-                          padding: const EdgeInsets.all(AppUI.innerPadding),
-                          child: Wrap(
-                            spacing: 10,
-                            runSpacing: 10,
-                            children: [
-                              OutlinedButton.icon(
-                                onPressed: () => _showInviteMemberDialog(
-                                  context,
-                                  appState,
-                                  room,
-                                ),
-                                icon: const Icon(Icons.person_add_alt_1),
-                                label: const Text('邀請成員'),
-                              ),
-                              OutlinedButton.icon(
-                                onPressed: () => _showEditRoomSettingsDialog(
-                                  context,
-                                  appState,
-                                  room,
-                                ),
-                                icon: const Icon(Icons.settings_outlined),
-                                label: const Text('房間資訊'),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
+
 
                     const SizedBox(height: 20),
                   ],
@@ -1579,9 +1652,355 @@ class StudyRoomDetailPage extends StatelessWidget {
                 ListView(
                   padding: const EdgeInsets.all(AppUI.pagePadding),
                   children: [
+
+                    // ── 房間公告 ──────────────────────────────
                     _SectionHeader(
-                      title: '房間規則與設定',
-                      subtitle: '這裡整理房間定位、加入方式、規則與補充資訊。',
+                      title: '房間公告',
+                      subtitle: '這裡顯示房主想提醒大家的內容。',
+                    ),
+                    const SizedBox(height: AppUI.cardGap),
+                    Card(
+                      shape: AppUI.cardShape(),
+                      child: Padding(
+                        padding: const EdgeInsets.all(AppUI.innerPadding),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              room.announcement.isEmpty
+                                  ? '目前還沒有公告，大家可以先照自己的進度前進。'
+                                  : room.announcement,
+                              style: TextStyle(
+                                fontSize: 14,
+                                height: 1.55,
+                                color: primaryText,
+                              ),
+                            ),
+                            if (isOwner) ...[
+                              const SizedBox(height: 14),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: OutlinedButton.icon(
+                                  onPressed: () =>
+                                      _showEditAnnouncementDialog(
+                                        context,
+                                        appState,
+                                        room,
+                                      ),
+                                  icon: const Icon(Icons.edit_outlined),
+                                  label: const Text('編輯公告'),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: AppUI.sectionGap),
+
+                    // ── 今日共同目標 ──────────────────────────
+                    _SectionHeader(
+                      title: '今日共同目標',
+                      subtitle: '依照房間類型追蹤今天的共同自律進度。',
+                    ),
+                    const SizedBox(height: AppUI.cardGap),
+                    Card(
+                      shape: AppUI.cardShape(),
+                      child: Padding(
+                        padding: const EdgeInsets.all(AppUI.innerPadding),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              room.challengeTitle == '今日房間挑戰'
+                                  ? '今日${_metricName(room)}挑戰'
+                                  : room.challengeTitle,
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: primaryText,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              room.challengeDescription == '一起累積專注時數'
+                                  ? '一起累積 $goalText，完成今天的房間目標。'
+                                  : room.challengeDescription,
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: secondaryText,
+                                height: 1.45,
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(
+                                AppUI.radiusPill,
+                              ),
+                              child: LinearProgressIndicator(
+                                value: progress,
+                                minHeight: 10,
+                                backgroundColor: AppUI.isDark(context)
+                                    ? const Color(0xFF2A2F3A)
+                                    : const Color(0xFFE5E7EB),
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  accent,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '目前進度：${(progress * 100).round()}%',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      color: primaryText,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  room.challengeDeadlineLabel,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: secondaryText,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              '累積 $trackedValueText / 目標 $goalText',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: secondaryText,
+                              ),
+                            ),
+                            if (isOwner) ...[
+                              const SizedBox(height: 14),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: OutlinedButton.icon(
+                                  onPressed: () => _showSetChallengeDialog(
+                                    context,
+                                    appState,
+                                    room,
+                                  ),
+                                  icon: const Icon(Icons.flag_outlined),
+                                  label: const Text('調整挑戰'),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    // ── 房主設定（僅房主可見） ─────────────────
+                    if (isOwner) ...[
+                      const SizedBox(height: AppUI.sectionGap),
+                      _SectionHeader(
+                        title: '房主設定',
+                        subtitle: '管理房間的公告、目標、成員與規則。',
+                      ),
+                      const SizedBox(height: AppUI.cardGap),
+                      Card(
+                        shape: AppUI.cardShape(),
+                        clipBehavior: Clip.antiAlias,
+                        child: Column(
+                          children: [
+                            ListTile(
+                              leading: Container(
+                                width: 38,
+                                height: 38,
+                                decoration: BoxDecoration(
+                                  color: accent.withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Icon(
+                                  Icons.campaign_outlined,
+                                  color: accent,
+                                  size: 20,
+                                ),
+                              ),
+                              title: const Text(
+                                '設定公告',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              subtitle: const Text('更新房間公告提醒大家'),
+                              trailing: const Icon(
+                                Icons.chevron_right_rounded,
+                              ),
+                              onTap: () => _showEditAnnouncementDialog(
+                                context,
+                                appState,
+                                room,
+                              ),
+                            ),
+                            Divider(
+                              height: 1,
+                              indent: 62,
+                              color: Theme.of(context).dividerColor,
+                            ),
+                            ListTile(
+                              leading: Container(
+                                width: 38,
+                                height: 38,
+                                decoration: BoxDecoration(
+                                  color: const Color(
+                                    0xFFF59E0B,
+                                  ).withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Icon(
+                                  Icons.flag_outlined,
+                                  color: Color(0xFFF59E0B),
+                                  size: 20,
+                                ),
+                              ),
+                              title: const Text(
+                                '設定共同目標',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              subtitle: const Text('調整今日房間挑戰與截止時間'),
+                              trailing: const Icon(
+                                Icons.chevron_right_rounded,
+                              ),
+                              onTap: () => _showSetChallengeDialog(
+                                context,
+                                appState,
+                                room,
+                              ),
+                            ),
+                            Divider(
+                              height: 1,
+                              indent: 62,
+                              color: Theme.of(context).dividerColor,
+                            ),
+                            ListTile(
+                              leading: Container(
+                                width: 38,
+                                height: 38,
+                                decoration: BoxDecoration(
+                                  color: const Color(
+                                    0xFF10B981,
+                                  ).withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Icon(
+                                  Icons.person_add_alt_1,
+                                  color: Color(0xFF10B981),
+                                  size: 20,
+                                ),
+                              ),
+                              title: const Text(
+                                '邀請成員',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              subtitle: const Text('新增成員到這間自律房'),
+                              trailing: const Icon(
+                                Icons.chevron_right_rounded,
+                              ),
+                              onTap: () => _showInviteMemberDialog(
+                                context,
+                                appState,
+                                room,
+                              ),
+                            ),
+                            Divider(
+                              height: 1,
+                              indent: 62,
+                              color: Theme.of(context).dividerColor,
+                            ),
+                            ListTile(
+                              leading: Container(
+                                width: 38,
+                                height: 38,
+                                decoration: BoxDecoration(
+                                  color: const Color(
+                                    0xFF7C6AE6,
+                                  ).withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Icon(
+                                  Icons.settings_outlined,
+                                  color: Color(0xFF7C6AE6),
+                                  size: 20,
+                                ),
+                              ),
+                              title: const Text(
+                                '房間資訊',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              subtitle: const Text('修改標籤、人數上限等基本資訊'),
+                              trailing: const Icon(
+                                Icons.chevron_right_rounded,
+                              ),
+                              onTap: () => _showEditRoomSettingsDialog(
+                                context,
+                                appState,
+                                room,
+                              ),
+                            ),
+                            Divider(
+                              height: 1,
+                              indent: 62,
+                              color: Theme.of(context).dividerColor,
+                            ),
+                            ListTile(
+                              leading: Container(
+                                width: 38,
+                                height: 38,
+                                decoration: BoxDecoration(
+                                  color: const Color(
+                                    0xFF0EA5E9,
+                                  ).withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Icon(
+                                  Icons.rule_outlined,
+                                  color: Color(0xFF0EA5E9),
+                                  size: 20,
+                                ),
+                              ),
+                              title: const Text(
+                                '修改規則',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              subtitle: const Text('編輯房規、暱稱規則與加入問題'),
+                              trailing: const Icon(
+                                Icons.chevron_right_rounded,
+                              ),
+                              onTap: () => _showEditRoomRulesDialog(
+                                context,
+                                appState,
+                                room,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+
+                    const SizedBox(height: AppUI.sectionGap),
+
+                    // ── 房間規則（靜態，所有人可見） ───────────
+                    _SectionHeader(
+                      title: '房間規則',
+                      subtitle: '這裡整理房間定位、加入方式與規則說明。',
                     ),
                     const SizedBox(height: AppUI.cardGap),
 
@@ -1634,16 +2053,19 @@ class StudyRoomDetailPage extends StatelessWidget {
                           ? '目前沒有補充規則'
                           : room.roomRules,
                     ),
+
                     const SizedBox(height: AppUI.sectionGap),
+
+                    // ── 退出 / 關閉房間 ──────────────────────
                     Card(
                       shape: AppUI.cardShape(),
                       child: Padding(
                         padding: const EdgeInsets.all(AppUI.innerPadding),
                         child: Row(
                           children: [
-                            Icon(
+                            const Icon(
                               Icons.exit_to_app_rounded,
-                              color: const Color(0xFFEF4444),
+                              color: Color(0xFFEF4444),
                             ),
                             const SizedBox(width: 12),
                             Expanded(
@@ -1675,8 +2097,11 @@ class StudyRoomDetailPage extends StatelessWidget {
                             ),
                             const SizedBox(width: 10),
                             OutlinedButton(
-                              onPressed: () =>
-                                  _confirmLeaveRoom(context, appState, room),
+                              onPressed: () => _confirmLeaveRoom(
+                                context,
+                                appState,
+                                room,
+                              ),
                               child: Text(
                                 room.ownerId == 'local_user' &&
                                         approvedMembers.length <= 1
@@ -1688,6 +2113,8 @@ class StudyRoomDetailPage extends StatelessWidget {
                         ),
                       ),
                     ),
+
+                    const SizedBox(height: 20),
                   ],
                 ),
               ],
@@ -2140,11 +2567,11 @@ class _RoomLiveStage extends StatelessWidget {
       case StudyRoomType.study:
         return '按下開始專注後，你的人物會出現在房間裡。';
       case StudyRoomType.sleep:
-        return '按下開始睡覺後，你的人物會進入睡眠房。';
+        return '同步健康資料後，你的睡眠進度會出現在房間裡。';
       case StudyRoomType.exercise:
-        return '按下開始運動後，你的人物會出現在運動房。';
+        return '同步健康資料後，你的運動進度會出現在房間裡。';
       case StudyRoomType.steps:
-        return '按下開始走路後，你的人物會出現在步數房。';
+        return '同步健康資料後，你的步數進度會出現在房間裡。';
       case StudyRoomType.custom:
         return '按下開始自律後，你的人物會出現在房間裡。';
     }

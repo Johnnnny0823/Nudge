@@ -47,7 +47,7 @@ class _CalendarPageState extends State<CalendarPage> {
   }
 
   bool _isToday(DateTime date) {
-    final now = DateTime.now();
+    final now = DateTime.now().subtract(const Duration(hours: 5));
     return now.year == date.year &&
         now.month == date.month &&
         now.day == date.day;
@@ -353,7 +353,7 @@ class _CalendarPageState extends State<CalendarPage> {
                           crossAxisCount: 7,
                           mainAxisSpacing: 8,
                           crossAxisSpacing: 8,
-                          childAspectRatio: 0.90,
+                          childAspectRatio: 0.78,
                         ),
                     itemBuilder: (context, index) {
                       final date = days[index];
