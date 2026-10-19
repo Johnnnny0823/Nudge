@@ -17,6 +17,17 @@
 
 ---
 
+## 📸 App 畫面
+
+<table>
+<tr><td align="center"><img src="docs/screenshots/app/home.jpg" width="180" alt="個人首頁"/><br/><sub>個人首頁</sub></td><td align="center"><img src="docs/screenshots/app/character.jpg" width="180" alt="角色中心"/><br/><sub>角色中心</sub></td><td align="center"><img src="docs/screenshots/app/focus.jpg" width="180" alt="番茄鐘專注"/><br/><sub>番茄鐘專注</sub></td><td align="center"><img src="docs/screenshots/app/social.jpg" width="180" alt="社交中心"/><br/><sub>社交中心</sub></td></tr>
+<tr><td align="center"><img src="docs/screenshots/app/analysis.jpg" width="180" alt="個人進階分析"/><br/><sub>個人進階分析</sub></td><td align="center"><img src="docs/screenshots/app/leaderboard.jpg" width="180" alt="排行榜"/><br/><sub>排行榜</sub></td><td align="center"><img src="docs/screenshots/app/shop.jpg" width="180" alt="造型商城"/><br/><sub>造型商城</sub></td><td align="center"><img src="docs/screenshots/app/guardian.jpg" width="180" alt="家長陪伴"/><br/><sub>家長陪伴</sub></td></tr>
+</table>
+
+> App 截圖取自專題簡報（`docs/專題文件/B06_Nudge_簡報.pdf`）。
+
+---
+
 ## ✨ 核心功能
 
 | 類別 | 功能 |
@@ -35,6 +46,18 @@
 ### 🌐 網頁後台（`web_dashboard/`）
 
 手機不適合做的事交給網頁：長期趨勢報表、守護者中心、團體／班級挑戰與排名、營運後台（房間審核、商店上架）、匿名化研究分析、「自律星球」視覺化，以及畢業展示用的簡報模式。說明見 [docs/web_dashboard_and_notifications.md](docs/web_dashboard_and_notifications.md)。
+
+| 首頁 | 網頁後台總覽 |
+|---|---|
+| ![首頁](docs/screenshots/web/landing.jpg) | ![網頁後台總覽](docs/screenshots/web/dashboard.jpg) |
+| **個人進階分析：月／年度趨勢** | **人生技能樹** |
+| ![月度趨勢](docs/screenshots/web/trends.jpg) | ![人生技能樹](docs/screenshots/web/skill-tree.jpg) |
+| **自律星球** | **家長陪伴中心** |
+| ![自律星球](docs/screenshots/web/planet.jpg) | ![家長陪伴中心](docs/screenshots/web/guardian.jpg) |
+| **研究中心：匿名化全站數據** | **商城頁** |
+| ![研究中心](docs/screenshots/web/research.jpg) | ![商城頁](docs/screenshots/web/shop.jpg) |
+
+> 網頁後台截圖在本機以離線方式執行（未連 Firebase），畫面上的數字為頁面內建的展示資料。
 
 ---
 
