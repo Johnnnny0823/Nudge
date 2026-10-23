@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "web_dashboard/**"
+      - "scripts/generate_web_runtime_config.cjs"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -31,15 +32,13 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
-      - name: Inject Firebase web API key
+      - name: Generate public Firebase runtime config
         env:
-          FIREBASE_WEB_API_KEY: ${{ secrets.FIREBASE_WEB_API_KEY }}
-        run: |
-          if [ -z "$FIREBASE_WEB_API_KEY" ]; then
-            echo "::warning::未設定 FIREBASE_WEB_API_KEY secret，網頁後台將無法連線 Firebase"
-            exit 0
-          fi
-          sed -i "s/__FIREBASE_WEB_API_KEY__/${FIREBASE_WEB_API_KEY}/g" web_dashboard/assets/app.js web_dashboard/login.html
+          NUDGE_FIREBASE_APP_CHECK_SITE_KEY: ${{ vars.NUDGE_FIREBASE_APP_CHECK_SITE_KEY }}
+          NUDGE_WEB_ENVIRONMENT: production
+        run: >-
+          node scripts/generate_web_runtime_config.cjs
+          --output web_dashboard/assets/runtime-config.js
 
       - name: Upload dashboard artifact
         uses: actions/upload-pages-artifact@v3

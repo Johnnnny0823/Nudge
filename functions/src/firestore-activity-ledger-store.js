@@ -1,0 +1,429 @@
+import { createHash } from "node:crypto";
+
+function documentId(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function timestampToIso(value) {
+  return value && typeof value.toDate === "function"
+    ? value.toDate().toISOString()
+    : value;
+}
+
+class FirestoreActivityLedgerTransaction {
+  constructor(firestore, transaction) {
+    this.firestore = firestore;
+    this.transaction = transaction;
+  }
+
+  #eventRef(eventKey) {
+    return this.firestore.collection("activity_events").doc(documentId(eventKey));
+  }
+
+  #sourceRecordRef(sourceKey) {
+    return this.firestore
+      .collection("activity_source_records")
+      .doc(documentId(sourceKey));
+  }
+
+  #settlementRef(fingerprint) {
+    return this.firestore
+      .collection("activity_settlements")
+      .doc(documentId(fingerprint));
+  }
+
+  #sessionRef(fingerprint) {
+    return this.firestore
+      .collection("activity_sessions")
+      .doc(documentId(fingerprint));
+  }
+
+  #rewardEntryRef(rewardEntryId) {
+    return this.firestore.collection("reward_ledger_entries").doc(rewardEntryId);
+  }
+
+  async #getReferencedEvent(claimSnapshot) {
+    if (!claimSnapshot.exists) {
+      return null;
+    }
+    const eventPath = claimSnapshot.data().eventPath;
+    if (typeof eventPath !== "string" || eventPath.length === 0) {
+      return null;
+    }
+    const eventSnapshot = await this.transaction.get(
+      this.firestore.doc(eventPath),
+    );
+    return eventSnapshot.exists ? eventSnapshot.data() : null;
+  }
+
+  async getEvent(eventKey) {
+    const snapshot = await this.transaction.get(this.#eventRef(eventKey));
+    return snapshot.exists ? snapshot.data() : null;
+  }
+
+  async getRoomMembership(roomId, userId) {
+    const roomRef = this.firestore.collection("rooms").doc(roomId);
+    const roomSnapshot = await this.transaction.get(roomRef);
+    const memberSnapshot = await this.transaction.get(
+      roomRef.collection("members").doc(userId),
+    );
+    if (!roomSnapshot.exists || !memberSnapshot.exists) {
+      return null;
+    }
+    const data = memberSnapshot.data();
+    const roomData = roomSnapshot.data();
+    return {
+      ...data,
+      roomStatus: roomData.status,
+      sharingConsentRequired:
+        roomData.sharingConsentRequired === true ||
+        roomData.sharingPolicy === "required",
+      activeFrom: timestampToIso(data.activeFrom),
+      activeUntil: timestampToIso(data.activeUntil),
+    };
+  }
+
+  async getRoomActivityProjection(roomId, sessionId) {
+    const snapshot = await this.transaction.get(
+      this.firestore
+        .collection("rooms")
+        .doc(roomId)
+        .collection("activity_sessions")
+        .doc(sessionId),
+    );
+    return snapshot.exists ? snapshot.data() : null;
+  }
+
+  async projectRoomActivitySession(roomSession) {
+    if (!roomSession) return;
+    const roomRef = this.firestore.collection("rooms").doc(roomSession.roomId);
+    const memberRef = roomRef.collection("members").doc(roomSession.actorId);
+    this.transaction.set(
+      roomRef.collection("activity_sessions").doc(roomSession.sessionId),
+      roomSession,
+    );
+    this.transaction.update(memberRef, {
+      activeSessionId: ["completed", "cancelled"].includes(roomSession.status)
+        ? null
+        : roomSession.sessionId,
+      updatedAt: roomSession.updatedAt,
+    });
+  }
+
+  async getSourceRecord(sourceKey) {
+    const claim = await this.transaction.get(this.#sourceRecordRef(sourceKey));
+    return this.#getReferencedEvent(claim);
+  }
+
+  async getSettlement(fingerprint) {
+    const claim = await this.transaction.get(this.#settlementRef(fingerprint));
+    return this.#getReferencedEvent(claim);
+  }
+
+  async getSession(fingerprint) {
+    const snapshot = await this.transaction.get(this.#sessionRef(fingerprint));
+    return snapshot.exists ? snapshot.data() : null;
+  }
+
+  async getTaskProjection(userId, taskId) {
+    const snapshot = await this.transaction.get(
+      this.firestore.collection("users").doc(userId),
+    );
+    if (!snapshot.exists) return null;
+    const tasks = Array.isArray(snapshot.data().tasks)
+      ? snapshot.data().tasks
+      : [];
+    return tasks.find(task => task?.id === taskId) ?? null;
+  }
+
+  async getRewardEntry(rewardEntryId) {
+    const snapshot = await this.transaction.get(
+      this.#rewardEntryRef(rewardEntryId),
+    );
+    return snapshot.exists ? snapshot.data() : null;
+  }
+
+  async getRewardCutover() {
+    const snapshot = await this.transaction.get(
+      this.firestore.collection("system_state").doc("reward_ledger_cutover"),
+    );
+    return snapshot.exists ? snapshot.data() : { writesPaused: false };
+  }
+
+  async getRewardProjection(userId) {
+    const snapshot = await this.transaction.get(
+      this.firestore.collection("users").doc(userId),
+    );
+    return snapshot.exists ? snapshot.data() : null;
+  }
+
+  #writeRewardSettlement(actorUserId, rewardSettlement) {
+    if (!rewardSettlement?.isNew) return;
+    this.transaction.create(
+      this.#rewardEntryRef(rewardSettlement.entry.rewardEntryId),
+      { schemaVersion: 1, ...rewardSettlement.entry },
+    );
+    this.transaction.update(
+      this.firestore.collection("users").doc(actorUserId),
+      rewardSettlement.projection,
+    );
+  }
+
+  async updateTaskProjection(userId, taskId, completed, occurredAt) {
+    const userRef = this.firestore.collection("users").doc(userId);
+    const snapshot = await this.transaction.get(userRef);
+    if (!snapshot.exists) return null;
+    const tasks = Array.isArray(snapshot.data().tasks)
+      ? snapshot.data().tasks.map(task => ({ ...task }))
+      : [];
+    const index = tasks.findIndex(task => task?.id === taskId);
+    if (index < 0) return null;
+    tasks[index] = {
+      ...tasks[index],
+      done: completed,
+      isDone: completed,
+      completedAt: completed ? occurredAt : null,
+      updatedAt: occurredAt,
+    };
+    this.transaction.update(userRef, { tasks });
+    return tasks[index];
+  }
+
+  async rememberDuplicateEvent(eventKey, event, sourceKey = null) {
+    const eventRef = this.#eventRef(eventKey);
+    this.transaction.create(eventRef, {
+      schemaVersion: 1,
+      ...event,
+      eventId: event.evidence.eventId,
+      actorUserId: event.evidence.actorUserId,
+      eventType: event.evidence.eventType,
+      occurredAt: event.evidence.occurredAt,
+      receivedAt: event.evidence.receivedAt,
+    });
+    if (sourceKey) {
+      this.transaction.create(this.#sourceRecordRef(sourceKey), {
+        schemaVersion: 1,
+        eventPath: eventRef.path,
+        sourceKey,
+      });
+    }
+  }
+
+  async createActivityEvent({
+    eventKey,
+    eventId,
+    event,
+    sourceKey,
+    fingerprint,
+    session,
+  }) {
+    const eventRef = this.#eventRef(eventKey);
+    this.transaction.create(eventRef, {
+      schemaVersion: 1,
+      ...event,
+      eventId,
+      actorUserId: event.evidence.actorUserId,
+      eventType: event.evidence.eventType,
+      occurredAt: event.evidence.occurredAt,
+      receivedAt: event.evidence.receivedAt,
+    });
+    this.transaction.create(this.#sourceRecordRef(sourceKey), {
+      schemaVersion: 1,
+      eventPath: eventRef.path,
+      sourceKey,
+    });
+    this.transaction.set(this.#sessionRef(fingerprint), {
+      schemaVersion: 1,
+      ...session,
+      activityFingerprint: fingerprint,
+      updatedAt: event.evidence.occurredAt,
+    });
+  }
+
+  async createSettlement({
+    eventKey,
+    eventId,
+    event,
+    receipt,
+    sourceKey,
+    fingerprint,
+    session,
+    rewardSettlement = null,
+  }) {
+    const eventRef = this.#eventRef(eventKey);
+    this.transaction.create(eventRef, {
+      schemaVersion: 1,
+      ...event,
+      eventId,
+      actorUserId: event.evidence.actorUserId,
+      eventType: event.evidence.eventType,
+      occurredAt: event.evidence.occurredAt,
+      receivedAt: event.evidence.receivedAt,
+    });
+    this.transaction.create(this.#sourceRecordRef(sourceKey), {
+      schemaVersion: 1,
+      eventPath: eventRef.path,
+      sourceKey,
+    });
+    this.transaction.create(this.#settlementRef(fingerprint), {
+      schemaVersion: 1,
+      eventPath: eventRef.path,
+      receiptId: receipt.receiptId,
+      activityFingerprint: fingerprint,
+    });
+    this.transaction.create(
+      this.firestore.collection("activity_receipts").doc(receipt.receiptId),
+      {
+        schemaVersion: 1,
+        ...receipt,
+        contributionIds: event.result.contributions.map(
+          contribution => contribution.contributionId,
+        ),
+      },
+    );
+    this.transaction.set(this.#sessionRef(fingerprint), {
+      schemaVersion: 1,
+      ...session,
+      activityFingerprint: fingerprint,
+      updatedAt: receipt.verifiedAt,
+    });
+    for (const contribution of event.result.contributions) {
+      this.transaction.create(
+        this.firestore
+          .collection("room_contributions")
+          .doc(contribution.contributionId),
+        {
+          schemaVersion: 1,
+          ...contribution,
+        },
+      );
+    }
+    this.#writeRewardSettlement(event.evidence.actorUserId, rewardSettlement);
+  }
+
+  async createCorrectionSettlement({
+    eventKey,
+    event,
+    receipt,
+    sourceKey,
+    fingerprint,
+    session,
+    rewardSettlement = null,
+  }) {
+    const eventRef = this.#eventRef(eventKey);
+    this.transaction.create(eventRef, {
+      schemaVersion: 1,
+      ...event,
+      eventId: event.evidence.eventId,
+      actorUserId: event.evidence.actorUserId,
+      eventType: event.evidence.eventType,
+      occurredAt: event.evidence.occurredAt,
+      receivedAt: event.evidence.receivedAt,
+    });
+    this.transaction.create(this.#sourceRecordRef(sourceKey), {
+      schemaVersion: 1,
+      eventPath: eventRef.path,
+      sourceKey,
+    });
+    this.transaction.update(this.#settlementRef(fingerprint), {
+      eventPath: eventRef.path,
+      receiptId: receipt.receiptId,
+      updatedAt: receipt.verifiedAt,
+    });
+    this.transaction.create(
+      this.firestore.collection("activity_receipts").doc(receipt.receiptId),
+      {
+        schemaVersion: 1,
+        ...receipt,
+        contributionIds: event.result.contributions.map(
+          contribution => contribution.contributionId,
+        ),
+      },
+    );
+    this.transaction.set(this.#sessionRef(fingerprint), {
+      schemaVersion: 1,
+      ...session,
+      activityFingerprint: fingerprint,
+      updatedAt: receipt.verifiedAt,
+    });
+    for (const contribution of event.result.contributions) {
+      this.transaction.create(
+        this.firestore
+          .collection("room_contributions")
+          .doc(contribution.contributionId),
+        {
+          schemaVersion: 1,
+          ...contribution,
+        },
+      );
+    }
+    this.#writeRewardSettlement(event.evidence.actorUserId, rewardSettlement);
+  }
+
+  async mergeSettlement({
+    fingerprint,
+    primaryEventKey,
+    primaryEvent,
+    duplicateEventKey,
+    duplicateEventId,
+    duplicateEvent,
+    sourceKey,
+    receipt,
+    newContributions,
+    primaryResult,
+  }) {
+    const primaryEventRef = this.#eventRef(primaryEventKey);
+    const duplicateEventRef = this.#eventRef(duplicateEventKey);
+    this.transaction.update(primaryEventRef, { result: primaryResult });
+    this.transaction.create(duplicateEventRef, {
+      schemaVersion: 1,
+      ...duplicateEvent,
+      eventId: duplicateEventId,
+      actorUserId: duplicateEvent.evidence.actorUserId,
+      eventType: duplicateEvent.evidence.eventType,
+      occurredAt: duplicateEvent.evidence.occurredAt,
+      receivedAt: duplicateEvent.evidence.receivedAt,
+    });
+    this.transaction.create(this.#sourceRecordRef(sourceKey), {
+      schemaVersion: 1,
+      eventPath: duplicateEventRef.path,
+      sourceKey,
+    });
+    this.transaction.update(
+      this.firestore.collection("activity_receipts").doc(receipt.receiptId),
+      {
+        contributionIds: primaryResult.contributions.map(
+          contribution => contribution.contributionId,
+        ),
+      },
+    );
+    this.transaction.update(this.#settlementRef(fingerprint), {
+      updatedAt: newContributions.at(-1).createdAt,
+    });
+    for (const contribution of newContributions) {
+      this.transaction.create(
+        this.firestore
+          .collection("room_contributions")
+          .doc(contribution.contributionId),
+        {
+          schemaVersion: 1,
+          ...contribution,
+        },
+      );
+    }
+  }
+}
+
+export class FirestoreActivityLedgerStore {
+  constructor({ firestore }) {
+    this.firestore = firestore;
+  }
+
+  async runTransaction(callback) {
+    return this.firestore.runTransaction(transaction =>
+      callback(
+        new FirestoreActivityLedgerTransaction(this.firestore, transaction),
+      ),
+    );
+  }
+}

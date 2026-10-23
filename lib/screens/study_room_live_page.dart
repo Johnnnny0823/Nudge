@@ -4,11 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/avatar_profile.dart';
+import '../models/room_activity_session.dart';
 import '../models/study_room_models.dart';
 import '../models/task_model.dart';
 import '../state/app_state.dart';
 import '../theme/app_ui.dart';
 import '../widgets/avatar_preview.dart';
+import '../widgets/room_resonance_panel.dart';
 import 'health_page.dart';
 
 class StudyRoomLivePage extends StatefulWidget {
@@ -31,13 +33,14 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
   int _elapsedSeconds = 0;
   bool _isRunning = false;
   DateTime? _sessionStartTime;
+  String? _roomActivitySessionId;
   bool _voiceJoined = false;
   bool _micMuted = false;
 
   @override
   void dispose() {
     _timer?.cancel();
-    _commitSessionAsResting();
+    unawaited(_commitSessionAsResting());
     _chatController.dispose();
     if (_voiceJoined) {
       try {
@@ -47,13 +50,56 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
     super.dispose();
   }
 
-  void _startSession(AppState appState, StudyRoomData room) {
+  Future<void> _startSession(AppState appState, StudyRoomData room) async {
     if (_isRunning) return;
+    RoomActivitySession? sessionForStart;
+    try {
+      final current = appState.activeRoomActivitySession(room.id);
+      if (current == null) {
+        sessionForStart = await appState.startRoomActivitySession(
+          roomId: room.id,
+          targetValue: _durationSeconds / 60,
+        );
+        _roomActivitySessionId = sessionForStart.sessionId;
+      } else {
+        sessionForStart = current;
+        _roomActivitySessionId = current.sessionId;
+        if (current.status == RoomActivitySessionStatus.paused) {
+          final localMetric = _sessionMetricValue(room);
+          sessionForStart = await appState.transitionRoomActivitySession(
+            roomId: room.id,
+            sessionId: current.sessionId,
+            status: RoomActivitySessionStatus.active,
+            metricValue: localMetric < current.metricValue
+                ? current.metricValue
+                : localMetric,
+          );
+        }
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('無法開始這輪活動：$error')));
+      return;
+    }
+    if (!mounted) return;
+    if (_hasInRoomTimer(room)) {
+      final restoredSeconds = (sessionForStart.metricValue * 60).round();
+      final restoredTargetSeconds = (sessionForStart.targetValue * 60).round();
+      _durationSeconds = restoredTargetSeconds;
+      _elapsedSeconds = restoredSeconds.clamp(0, restoredTargetSeconds);
+      _remainingSeconds = (restoredTargetSeconds - _elapsedSeconds).clamp(
+        1,
+        restoredTargetSeconds,
+      );
+    }
     setState(() {
       _isRunning = true;
       _sessionStartTime = DateTime.now();
     });
-    appState.addStudyRoomEvent(
+    await _recordRoomEvent(
+      appState,
       roomId: room.id,
       text: '${appState.profileNickname} 開始${_activeNoun(room)}',
       type: StudyRoomEventType.start,
@@ -65,26 +111,63 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
       sessionSeconds: _elapsedSeconds,
     );
 
+    _scheduleSessionTimer(appState, room);
+  }
+
+  void _scheduleSessionTimer(
+    AppState appState,
+    StudyRoomData room, {
+    bool autoComplete = true,
+  }) {
+    _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
-      if (_remainingSeconds <= 1) {
-        _completeSession(appState, room);
+      if (_remainingSeconds <= 1 && autoComplete) {
+        _timer?.cancel();
+        unawaited(_completeSession(appState, room));
         return;
       }
       setState(() {
-        _remainingSeconds--;
+        if (_remainingSeconds > 0) _remainingSeconds--;
         _elapsedSeconds++;
       });
     });
   }
 
-  void _pauseSession(AppState appState, StudyRoomData room) {
+  void _restartSessionTimer(
+    AppState appState,
+    StudyRoomData room, {
+    bool autoComplete = true,
+  }) {
+    if (!mounted || !_isRunning) return;
+    _scheduleSessionTimer(appState, room, autoComplete: autoComplete);
+  }
+
+  Future<void> _pauseSession(AppState appState, StudyRoomData room) async {
     if (!_isRunning) return;
     _timer?.cancel();
+    final sessionId = _roomActivitySessionId;
+    if (sessionId != null) {
+      try {
+        await appState.transitionRoomActivitySession(
+          roomId: room.id,
+          sessionId: sessionId,
+          status: RoomActivitySessionStatus.paused,
+          metricValue: _sessionMetricValue(room),
+        );
+      } catch (error) {
+        if (!mounted) return;
+        _restartSessionTimer(appState, room);
+        _showSessionSyncError(error);
+        return;
+      }
+    }
+    if (!mounted) return;
     setState(() {
       _isRunning = false;
     });
-    appState.addStudyRoomEvent(
+    await _recordRoomEvent(
+      appState,
       roomId: room.id,
       text: '${appState.profileNickname} 暫停了這輪${_metricName(room)}',
       type: StudyRoomEventType.pause,
@@ -96,12 +179,33 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
     );
   }
 
-  void _completeSession(AppState appState, StudyRoomData room) {
+  Future<void> _completeSession(AppState appState, StudyRoomData room) async {
     _timer?.cancel();
     final finishedSeconds = _elapsedSeconds + 1;
+    final sessionId = _roomActivitySessionId;
+    if (sessionId != null) {
+      try {
+        await appState.transitionRoomActivitySession(
+          roomId: room.id,
+          sessionId: sessionId,
+          status: RoomActivitySessionStatus.completed,
+          metricValue: _sessionMetricValue(
+            room,
+            elapsedSeconds: finishedSeconds,
+          ),
+        );
+      } catch (error) {
+        if (!mounted) return;
+        _restartSessionTimer(appState, room, autoComplete: false);
+        _showSessionSyncError(error);
+        return;
+      }
+    }
     if (_isFocusRoom(room) && finishedSeconds > 0) {
       final endTime = DateTime.now();
-      final startTime = _sessionStartTime ?? endTime.subtract(Duration(seconds: finishedSeconds));
+      final startTime =
+          _sessionStartTime ??
+          endTime.subtract(Duration(seconds: finishedSeconds));
       appState.addSecureFocusSeconds(finishedSeconds, startTime, endTime);
     }
     appState.updateMyStudyRoomPresence(
@@ -109,7 +213,8 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
       status: StudyMemberStatus.resting,
       sessionSeconds: 0,
     );
-    appState.addStudyRoomEvent(
+    await _recordRoomEvent(
+      appState,
       roomId: room.id,
       text: '${appState.profileNickname} 完成一輪${_metricName(room)}',
       type: StudyRoomEventType.complete,
@@ -118,18 +223,38 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
       _isRunning = false;
       _elapsedSeconds = 0;
       _remainingSeconds = _durationSeconds;
+      _roomActivitySessionId = null;
     });
   }
 
-  void _stopSession(AppState appState, StudyRoomData room) {
+  Future<void> _stopSession(AppState appState, StudyRoomData room) async {
     _timer?.cancel();
+    final sessionId = _roomActivitySessionId;
+    if (sessionId != null) {
+      try {
+        await appState.transitionRoomActivitySession(
+          roomId: room.id,
+          sessionId: sessionId,
+          status: RoomActivitySessionStatus.cancelled,
+          metricValue: _sessionMetricValue(room),
+        );
+      } catch (error) {
+        if (!mounted) return;
+        _restartSessionTimer(appState, room);
+        _showSessionSyncError(error);
+        return;
+      }
+    }
     if (_isFocusRoom(room) && _elapsedSeconds > 0) {
       final endTime = DateTime.now();
-      final startTime = _sessionStartTime ?? endTime.subtract(Duration(seconds: _elapsedSeconds));
+      final startTime =
+          _sessionStartTime ??
+          endTime.subtract(Duration(seconds: _elapsedSeconds));
       appState.addSecureFocusSeconds(_elapsedSeconds, startTime, endTime);
     }
     appState.clearMyStudyRoomPresence(room.id);
-    appState.addStudyRoomEvent(
+    await _recordRoomEvent(
+      appState,
       roomId: room.id,
       text: '${appState.profileNickname} 離開即時房間',
       type: StudyRoomEventType.leave,
@@ -138,24 +263,78 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
       _isRunning = false;
       _elapsedSeconds = 0;
       _remainingSeconds = _durationSeconds;
+      _roomActivitySessionId = null;
     });
   }
 
-  void _commitSessionAsResting() {
+  Future<void> _commitSessionAsResting() async {
     if (!_isRunning || _elapsedSeconds <= 0) return;
     final appState = context.read<AppState>();
     final room = appState.getStudyRoomById(widget.roomId);
     if (room == null) return;
+    final sessionId = _roomActivitySessionId;
+    final elapsedSeconds = _elapsedSeconds;
+    final metricValue = _sessionMetricValue(room);
+    final endTime = DateTime.now();
+    final startTime =
+        _sessionStartTime ??
+        endTime.subtract(Duration(seconds: elapsedSeconds));
+    if (sessionId != null) {
+      try {
+        await appState.transitionRoomActivitySession(
+          roomId: room.id,
+          sessionId: sessionId,
+          status: RoomActivitySessionStatus.paused,
+          metricValue: metricValue,
+        );
+      } catch (error) {
+        debugPrint('Failed to pause room activity during dispose: $error');
+        return;
+      }
+    }
     if (_isFocusRoom(room)) {
-      final endTime = DateTime.now();
-      final startTime = _sessionStartTime ?? endTime.subtract(Duration(seconds: _elapsedSeconds));
-      appState.addSecureFocusSeconds(_elapsedSeconds, startTime, endTime);
+      appState.addSecureFocusSeconds(elapsedSeconds, startTime, endTime);
     }
     appState.updateMyStudyRoomPresence(
       roomId: room.id,
       status: StudyMemberStatus.resting,
       sessionSeconds: 0,
     );
+  }
+
+  double _sessionMetricValue(StudyRoomData room, {int? elapsedSeconds}) {
+    final seconds = elapsedSeconds ?? _elapsedSeconds;
+    if (_isFocusRoom(room) || room.roomType == StudyRoomType.custom) {
+      return seconds / 60;
+    }
+    final me = room.members.where(
+      (member) =>
+          member.memberId == 'local_user' ||
+          member.memberId == context.read<AppState>().currentUser?.id,
+    );
+    return me.isEmpty ? 0 : me.first.todayMetricValue;
+  }
+
+  void _showSessionSyncError(Object error) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('活動狀態同步失敗：$error')));
+  }
+
+  Future<void> _recordRoomEvent(
+    AppState appState, {
+    required String roomId,
+    required String text,
+    required StudyRoomEventType type,
+  }) async {
+    try {
+      await appState.addStudyRoomEvent(roomId: roomId, text: text, type: type);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('活動已同步，但房間動態紀錄失敗：$error')));
+    }
   }
 
   void _setDuration(int seconds) {
@@ -167,25 +346,48 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
     });
   }
 
-  void _sendMessage(AppState appState) {
+  Future<void> _sendMessage(AppState appState) async {
     final text = _chatController.text.trim();
     if (text.isEmpty) return;
     _chatController.clear();
-    appState.addStudyRoomMessage(roomId: widget.roomId, text: text);
-    appState.addStudyRoomEvent(
+    try {
+      await appState.addStudyRoomMessage(roomId: widget.roomId, text: text);
+    } catch (error) {
+      if (!mounted) return;
+      _chatController.text = text;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('訊息同步失敗：$error')));
+      return;
+    }
+    await _recordRoomEvent(
+      appState,
       roomId: widget.roomId,
       text: '${appState.profileNickname} 傳送了一則訊息',
       type: StudyRoomEventType.message,
     );
   }
 
-  void _sendSticker(AppState appState, StudyRoomData room, String sticker) {
-    appState.addStudyRoomMessage(
-      roomId: room.id,
-      text: sticker,
-      type: StudyRoomMessageType.sticker,
-    );
-    appState.addStudyRoomEvent(
+  Future<void> _sendSticker(
+    AppState appState,
+    StudyRoomData room,
+    String sticker,
+  ) async {
+    try {
+      await appState.addStudyRoomMessage(
+        roomId: room.id,
+        text: sticker,
+        type: StudyRoomMessageType.sticker,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('貼圖同步失敗：$error')));
+      return;
+    }
+    await _recordRoomEvent(
+      appState,
       roomId: room.id,
       text: '${appState.profileNickname} 送出鼓勵貼圖 $sticker',
       type: StudyRoomEventType.sticker,
@@ -215,14 +417,14 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
   String _healthSyncDescription(StudyRoomData room) {
     switch (room.roomType) {
       case StudyRoomType.sleep:
-        return '睡眠房不在房內開始計時，會讀取健康資料中的睡眠時數來更新進度。';
+        return '睡眠房不在房內開始計時；App 會將 Health Connect 或 Apple Health 的睡眠紀錄送往活動帳本，驗證後自動更新房間進度。';
       case StudyRoomType.exercise:
-        return '運動房以健康資料的運動分鐘更新進度，房內保留聊天和鼓勵打卡。';
+        return '運動分鐘會由 Health Connect 或 Apple Health 送往活動帳本，驗證後自動更新房間進度；房內保留聊天和鼓勵打卡。';
       case StudyRoomType.steps:
-        return '步數房不在房內開始走路，會讀取健康資料中的今日步數來更新進度。';
+        return '步數房不在房內手動登錄；App 會將 Health Connect 或 Apple Health 的步數送往活動帳本，驗證後自動更新房間進度。';
       case StudyRoomType.study:
       case StudyRoomType.custom:
-        return '這間房會從外部資料同步今日進度。';
+        return '這間房會從可信任的外部資料來源同步今日進度。';
     }
   }
 
@@ -320,7 +522,10 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
     AppState appState,
     StudyMemberData member,
   ) {
-    if (member.memberId == 'local_user') return appState.avatarProfile;
+    if (member.memberId == 'local_user' ||
+        member.memberId == appState.currentUser?.id) {
+      return appState.avatarProfile;
+    }
     return member.avatarProfile ??
         appState.avatarVariantForSeed(
           member.memberId.isEmpty
@@ -360,8 +565,12 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
                     (member) => member.status == StudyMemberStatus.studying,
                   )
                   .length;
+        final currentMemberId = appState.currentUser?.id ?? 'local_user';
+        final hasApprovedMembership = approvedMembers.any(
+          (member) => member.memberId == currentMemberId,
+        );
         final me = approvedMembers.firstWhere(
-          (member) => member.memberId == 'local_user',
+          (member) => member.memberId == currentMemberId,
           orElse: () => StudyMemberData(
             memberId: 'local_user',
             name: appState.profileNickname,
@@ -385,7 +594,10 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
             actions: [
               if (_voiceJoined)
                 IconButton(
-                  icon: Icon(_micMuted ? Icons.mic_off_rounded : Icons.mic_rounded, color: _micMuted ? Colors.red : const Color(0xFF10B981)),
+                  icon: Icon(
+                    _micMuted ? Icons.mic_off_rounded : Icons.mic_rounded,
+                    color: _micMuted ? Colors.red : const Color(0xFF10B981),
+                  ),
                   tooltip: _micMuted ? '取消靜音' : '靜音',
                   onPressed: () {
                     setState(() {
@@ -394,7 +606,12 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
                   },
                 ),
               IconButton(
-                icon: Icon(_voiceJoined ? Icons.headset_rounded : Icons.headset_off_rounded, color: _voiceJoined ? accent : null),
+                icon: Icon(
+                  _voiceJoined
+                      ? Icons.headset_rounded
+                      : Icons.headset_off_rounded,
+                  color: _voiceJoined ? accent : null,
+                ),
                 tooltip: _voiceJoined ? '退出語音房' : '加入語音房',
                 onPressed: () async {
                   if (_voiceJoined) {
@@ -403,9 +620,9 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
                       _voiceJoined = false;
                     });
                     if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('已退出語音房間')),
-                      );
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(const SnackBar(content: Text('已退出語音房間')));
                     }
                   } else {
                     await appState.joinVoiceRoom(widget.roomId);
@@ -415,7 +632,9 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
                     });
                     if (context.mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('已進入自律語音房 (Firestore 信令準備中)')),
+                        const SnackBar(
+                          content: Text('已進入自律語音房 (Firestore 信令準備中)'),
+                        ),
                       );
                     }
                   }
@@ -495,6 +714,40 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
                   },
                 ),
               const SizedBox(height: AppUI.sectionGap),
+              RoomResonancePanel(
+                accent: accent,
+                currentUserId: currentMemberId,
+                available:
+                    appState.currentUser != null &&
+                    !appState.isGuestMode &&
+                    hasApprovedMembership,
+                sharingEnabled: appState.roomResonanceSharingEnabled(room.id),
+                signals: appState.roomResonanceSignals(room.id),
+                memberNames: {
+                  for (final member in approvedMembers)
+                    member.memberId: member.roomNickname.isEmpty
+                        ? member.name
+                        : member.roomNickname,
+                },
+                onSharingChanged: (enabled) => appState.setRoomResonanceSharing(
+                  roomId: room.id,
+                  enabled: enabled,
+                ),
+                onPublish: (cue) async {
+                  await appState.publishRoomResonance(
+                    roomId: room.id,
+                    cue: cue,
+                  );
+                },
+                onWithdraw: () => appState.withdrawRoomResonance(room.id),
+                onAcknowledge: (signal, response) async {
+                  await appState.acknowledgeRoomResonance(
+                    signal: signal,
+                    response: response,
+                  );
+                },
+              ),
+              const SizedBox(height: AppUI.sectionGap),
               _StickerPanel(
                 accent: accent,
                 onStickerTap: (sticker) =>
@@ -504,7 +757,7 @@ class _StudyRoomLivePageState extends State<StudyRoomLivePage> {
               _ChatPanel(
                 controller: _chatController,
                 messages: room.messages,
-                currentUserId: 'local_user',
+                currentUserId: currentMemberId,
                 accent: accent,
                 onSend: () => _sendMessage(appState),
               ),
@@ -1679,8 +1932,8 @@ class _HealthSyncPanel extends StatelessWidget {
               width: double.infinity,
               child: ElevatedButton.icon(
                 onPressed: onSync,
-                icon: const Icon(Icons.sync_outlined),
-                label: const Text('前往健康頁同步'),
+                icon: const Icon(Icons.health_and_safety_outlined),
+                label: Text(isHealthConnected ? '更新健康資料' : '連接健康資料'),
               ),
             ),
           ],
@@ -2051,6 +2304,8 @@ class _EventPanel extends StatelessWidget {
         return Icons.pause_circle_outline;
       case StudyRoomEventType.complete:
         return Icons.check_circle_outline;
+      case StudyRoomEventType.cancel:
+        return Icons.cancel_outlined;
       case StudyRoomEventType.leave:
         return Icons.logout_rounded;
       case StudyRoomEventType.message:
@@ -2069,6 +2324,7 @@ class _EventPanel extends StatelessWidget {
         return const Color(0xFF10B981);
       case StudyRoomEventType.pause:
         return const Color(0xFFF59E0B);
+      case StudyRoomEventType.cancel:
       case StudyRoomEventType.leave:
         return const Color(0xFF64748B);
       case StudyRoomEventType.message:

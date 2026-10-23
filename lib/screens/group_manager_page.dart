@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../models/relationship_membership.dart';
 import '../state/app_state.dart';
 import '../theme/app_ui.dart';
+import '../widgets/relationship_role_surface_card.dart';
 
 class GroupManagerPage extends StatefulWidget {
   const GroupManagerPage({super.key});
@@ -12,7 +14,6 @@ class GroupManagerPage extends StatefulWidget {
 
 class _GroupManagerPageState extends State<GroupManagerPage> {
   // Challenge builder controllers
-  final _groupNameCtrl = TextEditingController();
   final _rewardCtrl = TextEditingController();
   String _challengeType = '讀書專注';
   int _challengeDays = 7;
@@ -32,7 +33,6 @@ class _GroupManagerPageState extends State<GroupManagerPage> {
 
   @override
   void dispose() {
-    _groupNameCtrl.dispose();
     _rewardCtrl.dispose();
     _scheduleTitleCtrl.dispose();
     _scheduleTimeCtrl.dispose();
@@ -43,19 +43,21 @@ class _GroupManagerPageState extends State<GroupManagerPage> {
   }
 
   void _publishChallenge(AppState appState) async {
-    final group = _groupNameCtrl.text.trim();
     final reward = _rewardCtrl.text.trim();
-    if (group.isEmpty || reward.isEmpty) {
+    if (reward.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('請填寫團體名稱與通關獎勵'),
+          content: Text('請填寫通關獎勵'),
           behavior: SnackBarBehavior.floating,
         ),
       );
       return;
     }
-    await appState.publishGroupChallenge(group, _challengeType, _challengeDays, reward);
-    _groupNameCtrl.clear();
+    await appState.publishGroupChallenge(
+      _challengeType,
+      _challengeDays,
+      reward,
+    );
     _rewardCtrl.clear();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -119,16 +121,104 @@ class _GroupManagerPageState extends State<GroupManagerPage> {
     }
   }
 
+  Future<void> _removeMember(AppState appState, String memberId) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('移除團體成員'),
+        content: Text('確定要移除 $memberId？對方的團體連結與成果摘要會同時撤除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('確認移除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await appState.removeGroupMember(memberId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('成員已移除')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
+    }
+  }
+
+  Future<void> _transferOwnership(AppState appState, String memberId) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('轉移團體管理權'),
+        content: Text('確定將管理權轉移給 $memberId？完成後你會成為一般成員。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('確認轉移'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await appState.transferGroupOwnership(memberId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('管理權已轉移')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
+    final capabilities = appState.experienceCapabilities;
     final accentColor = appState.currentIconColor;
     final primaryText = AppUI.textPrimaryOf(context);
+    final currentChallengeId = appState.groupChallenge?['challengeId']
+        ?.toString();
+
+    if (!capabilities.canManageGroup) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('團體管理中心')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(AppUI.pagePadding),
+            child: Card(
+              shape: AppUI.cardShape(),
+              child: const Padding(
+                padding: EdgeInsets.all(AppUI.innerPadding),
+                child: Text(
+                  '只有目前團體的管理者可以發布挑戰、共同時段與任務模板。團體成員可以在團體任務頁查看內容，並自行決定活動時間。',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('團體與教育管理端'),
-      ),
+      appBar: AppBar(title: const Text('團體與教育管理端')),
       body: ListView(
         padding: const EdgeInsets.all(AppUI.pagePadding),
         children: [
@@ -173,6 +263,92 @@ class _GroupManagerPageState extends State<GroupManagerPage> {
           ),
           const SizedBox(height: AppUI.sectionGap),
 
+          const RelationshipRoleSurfaceCard(role: RelationshipRole.manager),
+          const SizedBox(height: AppUI.sectionGap),
+
+          Text(
+            '正式成員與分享狀態',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: primaryText,
+            ),
+          ),
+          const SizedBox(height: AppUI.cardGap),
+          Card(
+            shape: AppUI.cardShape(),
+            child: Column(
+              children: appState.canonicalGroup!.memberIds
+                  .map((memberId) {
+                    final isOwner =
+                        memberId == appState.canonicalGroup!.ownerId;
+                    final summaries = appState.groupMemberSummaries.where(
+                      (summary) => summary.memberId == memberId,
+                    );
+                    final summary = summaries.isEmpty ? null : summaries.first;
+                    final challengeParticipations = appState
+                        .groupChallengeParticipations
+                        .where(
+                          (item) =>
+                              item['memberId'] == memberId &&
+                              item['challengeId'] == currentChallengeId,
+                        );
+                    final challengeParticipation =
+                        challengeParticipations.isEmpty
+                        ? null
+                        : challengeParticipations.first;
+                    final challengeStatus = challengeParticipation == null
+                        ? '未參與目前挑戰'
+                        : challengeParticipation['status'] == 'completed'
+                        ? '已完成目前挑戰'
+                        : '挑戰進度 ${challengeParticipation['completedDays'] ?? 0}/${challengeParticipation['totalDays'] ?? 0} 天';
+                    return ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: accentColor.withValues(alpha: 0.15),
+                        child: Icon(
+                          isOwner
+                              ? Icons.admin_panel_settings
+                              : Icons.person_outline,
+                          color: accentColor,
+                        ),
+                      ),
+                      title: Text(
+                        summary?.displayName ?? memberId,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: Text(
+                        '${isOwner ? "團體管理者" : "團體成員"}・'
+                        '${summary == null ? "未分享成果" : "已同意成果摘要・${summary.disciplineScore} 分"}'
+                        '・$challengeStatus',
+                      ),
+                      trailing: isOwner
+                          ? const Chip(label: Text('管理者'))
+                          : PopupMenuButton<String>(
+                              onSelected: (action) {
+                                if (action == 'transfer') {
+                                  _transferOwnership(appState, memberId);
+                                } else if (action == 'remove') {
+                                  _removeMember(appState, memberId);
+                                }
+                              },
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(
+                                  value: 'transfer',
+                                  child: Text('轉移管理權'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'remove',
+                                  child: Text('移除成員'),
+                                ),
+                              ],
+                            ),
+                    );
+                  })
+                  .toList(growable: false),
+            ),
+          ),
+          const SizedBox(height: AppUI.sectionGap),
+
           // ─── Create Challenge Builder ─────────────────────────────────
           Text(
             '發佈團體挑戰 (Challenge)',
@@ -190,11 +366,14 @@ class _GroupManagerPageState extends State<GroupManagerPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  TextField(
-                    controller: _groupNameCtrl,
-                    decoration: const InputDecoration(
-                      labelText: '團體/班級名稱',
-                      hintText: '例如：三年二班、卓越英文補習班',
+                  InputDecorator(
+                    decoration: const InputDecoration(labelText: '發布到團體'),
+                    child: Text(
+                      appState.groupName ?? '尚未連結有效團體',
+                      style: TextStyle(
+                        color: primaryText,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 16),

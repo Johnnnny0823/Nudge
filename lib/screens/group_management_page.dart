@@ -1,7 +1,12 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../state/app_state.dart';
 import '../theme/app_ui.dart';
+import '../widgets/relationship_context_switcher.dart';
+import '../widgets/relationship_role_surface_card.dart';
+import '../models/relationship_membership.dart';
 import 'study_room_list_page.dart';
 import 'group_manager_page.dart';
 
@@ -11,48 +16,48 @@ class GroupManagementPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
+    final capabilities = appState.experienceCapabilities;
     final accentColor = appState.currentIconColor;
     final primaryText = AppUI.textPrimaryOf(context);
     final secondaryText = AppUI.textSecondaryOf(context);
 
     final challenge = appState.groupChallenge;
     final schedules = appState.studySchedules;
-    final template = appState.examTemplate;
+    final templates = appState.groupTemplates;
+    final groupMembership = appState.currentGroupMembership;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('團體與教育管理'),
-      ),
+      appBar: AppBar(title: Text(capabilities.groupSurfaceTitle)),
       body: ListView(
         padding: const EdgeInsets.all(AppUI.pagePadding),
         children: [
           Container(
             padding: const EdgeInsets.all(18),
             decoration: AppUI.heroGradient(accentColor),
-            child: const Row(
+            child: Row(
               children: [
-                Icon(
+                const Icon(
                   Icons.business_center_outlined,
                   color: Colors.white,
                   size: 32,
                 ),
-                SizedBox(width: 14),
+                const SizedBox(width: 14),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        '團體與教育管理端',
-                        style: TextStyle(
+                        capabilities.groupSurfaceTitle,
+                        style: const TextStyle(
                           color: Colors.white,
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      SizedBox(height: 4),
+                      const SizedBox(height: 4),
                       Text(
-                        '企業、學校、補習班專屬自律挑戰與學習任務清單接收端。',
-                        style: TextStyle(
+                        capabilities.groupSurfaceDescription,
+                        style: const TextStyle(
                           color: Colors.white70,
                           fontSize: 12,
                           height: 1.4,
@@ -65,17 +70,101 @@ class GroupManagementPage extends StatelessWidget {
             ),
           ),
           const SizedBox(height: AppUI.sectionGap),
+          const RelationshipContextSwitcher(scope: RelationshipScope.group),
+          if (groupMembership != null) ...[
+            const SizedBox(height: AppUI.sectionGap),
+            RelationshipRoleSurfaceCard(role: groupMembership.role),
+            const SizedBox(height: AppUI.sectionGap),
+          ],
+          if (appState.canonicalGroup != null) ...[
+            _buildGroupPlanetCard(context, appState, accentColor),
+            const SizedBox(height: AppUI.sectionGap),
+          ],
+
+          Card(
+            shape: AppUI.cardShape(),
+            child: Column(
+              children: [
+                SwitchListTile.adaptive(
+                  value: appState.isGroupResultSharingEnabled,
+                  title: const Text(
+                    '分享我的團體成果摘要',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: const Text('只分享分數、任務完成數、專注、步數與睡眠摘要；關閉後會立即退出團體排行。'),
+                  secondary: const Icon(Icons.verified_user_outlined),
+                  onChanged: (enabled) async {
+                    try {
+                      await appState.setGroupResultSharing(enabled);
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(enabled ? '已開啟團體成果分享' : '已撤回團體成果分享'),
+                        ),
+                      );
+                    } catch (error) {
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text(error.toString())));
+                    }
+                  },
+                ),
+                if (appState.isGroupResultSharingEnabled) ...[
+                  const Divider(height: 1),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '目前摘要：${appState.todayWeightedDisciplineScore} 分・'
+                            '${appState.focusMinutes} 分鐘專注・${appState.steps} 步',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: secondaryText,
+                            ),
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: () async {
+                            await appState.refreshGroupResultSummary();
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('團體成果摘要已更新')),
+                            );
+                          },
+                          icon: const Icon(Icons.sync, size: 16),
+                          label: const Text('立即更新'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: AppUI.sectionGap),
 
           // ─── 房主控制台入口（僅房主可見）───────────────────────────────
-          if (appState.isGroupOwner) ...[            
+          if (capabilities.canManageGroup) ...[
             InkWell(
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const GroupManagerPage())),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const GroupManagerPage()),
+              ),
               borderRadius: BorderRadius.circular(14),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 16,
+                ),
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
-                    colors: [accentColor.withValues(alpha: 0.25), accentColor.withValues(alpha: 0.10)],
+                    colors: [
+                      accentColor.withValues(alpha: 0.25),
+                      accentColor.withValues(alpha: 0.10),
+                    ],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
@@ -84,26 +173,46 @@ class GroupManagementPage extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.admin_panel_settings_outlined, color: accentColor, size: 26),
+                    Icon(
+                      Icons.admin_panel_settings_outlined,
+                      color: accentColor,
+                      size: 26,
+                    ),
                     const SizedBox(width: 14),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('管理者控制台', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: accentColor)),
+                          Text(
+                            '管理者控制台',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                              color: accentColor,
+                            ),
+                          ),
                           const SizedBox(height: 2),
-                          Text('發布挑戰、讀書時段與考試模板', style: TextStyle(fontSize: 12, color: primaryText.withValues(alpha: 0.6))),
+                          Text(
+                            '發布挑戰、讀書時段與考試模板',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: primaryText.withValues(alpha: 0.6),
+                            ),
+                          ),
                         ],
                       ),
                     ),
-                    Icon(Icons.arrow_forward_ios, size: 16, color: accentColor.withValues(alpha: 0.7)),
+                    Icon(
+                      Icons.arrow_forward_ios,
+                      size: 16,
+                      color: accentColor.withValues(alpha: 0.7),
+                    ),
                   ],
                 ),
               ),
             ),
             const SizedBox(height: AppUI.sectionGap),
           ],
-
 
           Row(
             children: [
@@ -176,7 +285,7 @@ class GroupManagementPage extends StatelessWidget {
               child: Padding(
                 padding: const EdgeInsets.all(AppUI.innerPadding),
                 child: Text(
-                  '目前無排程的讀書時段。家長或老師可在 Web 端「讀書時段」中新增。',
+                  '目前沒有共同自律時段。團體管理者可發布建議時間；成員仍自行開始與完成。',
                   style: TextStyle(fontSize: 13, color: secondaryText),
                 ),
               ),
@@ -190,7 +299,11 @@ class GroupManagementPage extends StatelessWidget {
                 final schedule = schedules[index];
                 return Padding(
                   padding: const EdgeInsets.only(bottom: AppUI.cardGap),
-                  child: _buildStudyScheduleCard(context, schedule, accentColor),
+                  child: _buildStudyScheduleCard(
+                    context,
+                    schedule,
+                    accentColor,
+                  ),
                 );
               },
             ),
@@ -214,7 +327,7 @@ class GroupManagementPage extends StatelessWidget {
           ),
           const SizedBox(height: AppUI.cardGap),
 
-          if (template == null)
+          if (templates.isEmpty)
             Card(
               shape: AppUI.cardShape(),
               child: Padding(
@@ -226,10 +339,197 @@ class GroupManagementPage extends StatelessWidget {
               ),
             )
           else
-            _buildTemplateCard(context, template, appState, accentColor),
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: templates.length,
+              itemBuilder: (context, index) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: AppUI.cardGap),
+                  child: _buildTemplateCard(
+                    context,
+                    templates[index],
+                    appState,
+                    accentColor,
+                  ),
+                );
+              },
+            ),
         ],
       ),
     );
+  }
+
+  Widget _buildGroupPlanetCard(
+    BuildContext context,
+    AppState appState,
+    Color accentColor,
+  ) {
+    final outcome = appState.groupRelationshipOutcome;
+    final secondaryText = AppUI.textSecondaryOf(context);
+    final roleLabel = appState.isGroupOwner ? '管理者' : '成員';
+    return Card(
+      shape: AppUI.cardShape(),
+      child: Padding(
+        padding: const EdgeInsets.all(AppUI.innerPadding),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.public_rounded, color: accentColor, size: 30),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        outcome?.characterTitle ?? '團體星球尚未生成',
+                        style: TextStyle(
+                          color: AppUI.textPrimaryOf(context),
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '$roleLabel介面 · ${appState.groupName ?? '目前團體'}',
+                        style: TextStyle(
+                          color: accentColor,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: '重新計算團體成果',
+                  onPressed: appState.isRefreshingGroupRelationshipOutcome
+                      ? null
+                      : () => _refreshGroupPlanet(context, appState),
+                  icon: appState.isRefreshingGroupRelationshipOutcome
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh_rounded),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              outcome?.characterDescription ??
+                  '由有效成員、主動分享與目前挑戰參與紀錄生成；管理者不能替成員完成。',
+              style: TextStyle(color: secondaryText, fontSize: 12, height: 1.4),
+            ),
+            if (outcome != null) ...[
+              const SizedBox(height: 16),
+              LinearProgressIndicator(
+                value: outcome.levelProgress,
+                color: accentColor,
+                backgroundColor: accentColor.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                outcome.nextLevelXp == null
+                    ? '團體星球 Lv.${outcome.growthLevel} · ${outcome.growthXp} 關係 XP · 已達目前最高階段'
+                    : '團體星球 Lv.${outcome.growthLevel} · ${outcome.growthXp}/${outcome.nextLevelXp} 關係 XP',
+                style: TextStyle(color: secondaryText, fontSize: 12),
+              ),
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _outcomeMetric(
+                    context,
+                    '有效成員',
+                    outcome.metric('memberCount'),
+                    accentColor,
+                  ),
+                  _outcomeMetric(
+                    context,
+                    '主動分享',
+                    outcome.metric('sharedMemberCount'),
+                    accentColor,
+                  ),
+                  _outcomeMetric(
+                    context,
+                    '挑戰參與',
+                    outcome.metric('joinedChallengeCount'),
+                    accentColor,
+                  ),
+                  _outcomeMetric(
+                    context,
+                    '挑戰完成',
+                    outcome.metric('completedChallengeCount'),
+                    accentColor,
+                  ),
+                ],
+              ),
+            ],
+            if (appState.groupRelationshipOutcomeError != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                appState.groupRelationshipOutcomeError!,
+                style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Text(
+              '團體星球與團體陪伴角色是共同成果，不發放個人 XP／自律幣。',
+              style: TextStyle(color: secondaryText, fontSize: 11, height: 1.4),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _outcomeMetric(
+    BuildContext context,
+    String label,
+    int value,
+    Color accentColor,
+  ) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: accentColor.withValues(alpha: 0.09),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        '$label $value',
+        style: TextStyle(
+          color: AppUI.textPrimaryOf(context),
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _refreshGroupPlanet(
+    BuildContext context,
+    AppState appState,
+  ) async {
+    try {
+      await appState.refreshGroupRelationshipOutcome();
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('團體星球已更新')));
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(appState.groupRelationshipOutcomeError ?? '更新失敗'),
+        ),
+      );
+    }
   }
 
   Widget _buildChallengeCard(
@@ -237,10 +537,23 @@ class GroupManagementPage extends StatelessWidget {
     Map<String, dynamic> challenge,
     Color accentColor,
   ) {
-    final group = challenge['group'] ?? '自律團體';
+    final group = challenge['groupName'] ?? '自律團體';
     final type = challenge['type'] ?? '專注挑戰';
-    final days = challenge['days'] ?? 7;
+    final days = (challenge['days'] as num?)?.toInt() ?? 7;
     final reward = challenge['reward'] ?? '徽章';
+    final appState = context.read<AppState>();
+    final challengeId = challenge['challengeId']?.toString();
+    final participants = challengeId == null
+        ? const <Map<String, dynamic>>[]
+        : appState.groupChallengeParticipations
+              .where((item) => item['challengeId'] == challengeId)
+              .toList(growable: false);
+    final participation = appState.currentGroupChallengeParticipation;
+    final completedCount = participants
+        .where((item) => item['status'] == 'completed')
+        .length;
+    final isLegacyChallenge =
+        challenge['schemaVersion'] != 2 || challengeId == null;
 
     final primaryText = AppUI.textPrimaryOf(context);
     final secondaryText = AppUI.textSecondaryOf(context);
@@ -264,7 +577,10 @@ class GroupManagementPage extends StatelessWidget {
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
                   decoration: BoxDecoration(
                     color: AppUI.green.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(8),
@@ -291,30 +607,68 @@ class GroupManagementPage extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              '挑戰規則：每日完成目標，連續累積點數。只顯示前 10 名。\n完成獎勵：$reward。',
-              style: TextStyle(fontSize: 12, color: secondaryText, height: 1.45),
+              '挑戰規則：每日任務由成員自行完成，App 與 Web 共用參與狀態。\n'
+              '團體進度不另發個人 XP／自律幣；目標獎勵待團體結算：$reward。'
+              '${participants.length} 人參加，$completedCount 人完成。',
+              style: TextStyle(
+                fontSize: 12,
+                color: secondaryText,
+                height: 1.45,
+              ),
             ),
             const Divider(height: 24),
+            if (participation != null) ...[
+              LinearProgressIndicator(
+                value:
+                    ((participation['completedDays'] as num?)?.toDouble() ??
+                        0) /
+                    math.max(1, days),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                participation['status'] == 'completed'
+                    ? '你已完成這次挑戰'
+                    : '你的進度 ${(participation['completedDays'] as num?)?.toInt() ?? 0} / $days 天；每日任務完成後會自動同步。',
+                style: TextStyle(fontSize: 12, color: secondaryText),
+              ),
+              const SizedBox(height: 12),
+            ],
             Row(
               children: [
                 Expanded(
                   child: ElevatedButton(
-                    onPressed: () async {
-                      final appState = context.read<AppState>();
-                      await appState.joinGroupChallengeAsTask();
-                      if (!context.mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('已成功參與挑戰，$days 天任務已匯入清單 🎯'),
-                          duration: const Duration(seconds: 3),
-                        ),
-                      );
-                    },
+                    onPressed: participation != null || isLegacyChallenge
+                        ? null
+                        : () async {
+                            try {
+                              await appState.joinGroupChallengeAsTask();
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('已參與挑戰，$days 天任務會同步到任務清單 🎯'),
+                                  duration: const Duration(seconds: 3),
+                                ),
+                              );
+                            } catch (error) {
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(error.toString())),
+                              );
+                            }
+                          },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: accentColor,
                       foregroundColor: Colors.white,
                     ),
-                    child: const Text('參與挑戰並匯入任務'),
+                    child: Text(
+                      isLegacyChallenge
+                          ? '請管理者重新發布新版挑戰'
+                          : participation == null
+                          ? '我要參與並同步任務'
+                          : participation['status'] == 'completed'
+                          ? '挑戰已完成'
+                          : '已參與・由我自行完成',
+                    ),
                   ),
                 ),
               ],
@@ -387,12 +741,20 @@ class GroupManagementPage extends StatelessWidget {
                 onPressed: () {
                   Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (_) => const StudyRoomListPage()),
+                    MaterialPageRoute(
+                      builder: (_) => const StudyRoomListPage(),
+                    ),
                   );
                 },
                 child: Row(
                   children: [
-                    Text('進入自律房', style: TextStyle(color: accentColor, fontWeight: FontWeight.bold)),
+                    Text(
+                      '進入自律房',
+                      style: TextStyle(
+                        color: accentColor,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                     const SizedBox(width: 4),
                     Icon(Icons.arrow_forward_ios, size: 12, color: accentColor),
                   ],
@@ -414,7 +776,7 @@ class GroupManagementPage extends StatelessWidget {
     final type = template['type'] ?? '大考';
     final days = int.tryParse(template['days']?.toString() ?? '7') ?? 7;
     final effort = template['effort'] ?? '每日投入中等';
-    final pressure = template['pressure'] ?? '策略性規劃';
+    final strategy = template['strategy'] ?? '策略性規劃';
 
     final primaryText = AppUI.textPrimaryOf(context);
     final secondaryText = AppUI.textSecondaryOf(context);
@@ -437,19 +799,24 @@ class GroupManagementPage extends StatelessWidget {
             const Divider(height: 20),
             Text(
               '每日投入強度：',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: secondaryText),
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: secondaryText,
+              ),
             ),
-            Text(
-              effort,
-              style: TextStyle(fontSize: 14, color: primaryText),
-            ),
+            Text(effort, style: TextStyle(fontSize: 14, color: primaryText)),
             const SizedBox(height: 12),
             Text(
               '準備階段策略：',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: secondaryText),
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: secondaryText,
+              ),
             ),
             Text(
-              pressure,
+              strategy,
               style: TextStyle(fontSize: 14, color: primaryText, height: 1.4),
             ),
             const SizedBox(height: 16),
@@ -458,7 +825,7 @@ class GroupManagementPage extends StatelessWidget {
                 Expanded(
                   child: ElevatedButton.icon(
                     onPressed: () {
-                      appState.importExamTemplate(type, days, effort, pressure);
+                      appState.importExamTemplate(type, days, effort, strategy);
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text('成功匯入 $type 的 $days 日學習任務至任務清單！'),

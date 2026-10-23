@@ -5,7 +5,95 @@ service cloud.firestore {
 
     // ─── Helper Functions ─────────────────────────────────────────────
     function isAuth() {
-      return request.auth != null;
+      return request.auth != null
+        && !exists(
+          /databases/$(database)/documents/account_deletion_fences/$(request.auth.uid)
+        );
+    }
+
+    function isAccountReferenceableAfter(userId) {
+      return userId is string
+        && existsAfter(
+          /databases/$(database)/documents/users/$(userId)
+        )
+        && !existsAfter(
+          /databases/$(database)/documents/account_deletion_fences/$(userId)
+        );
+    }
+
+    function areMutualFriends(userA, userB) {
+      return isAuth()
+        && exists(
+          /databases/$(database)/documents/users/$(userA)/friends/$(userB)
+        )
+        && exists(
+          /databases/$(database)/documents/users/$(userB)/friends/$(userA)
+        );
+    }
+
+    function acceptedFriendship(userA, userB) {
+      let forwardId = 'req_' + userA + '_' + userB;
+      let reverseId = 'req_' + userB + '_' + userA;
+      let forwardPath =
+        /databases/$(database)/documents/friend_requests/$(forwardId);
+      let reversePath =
+        /databases/$(database)/documents/friend_requests/$(reverseId);
+      return (
+          exists(forwardPath)
+          && get(forwardPath).data.senderId == userA
+          && get(forwardPath).data.receiverId == userB
+          && get(forwardPath).data.status == 'accepted'
+        )
+        || (
+          exists(reversePath)
+          && get(reversePath).data.senderId == userB
+          && get(reversePath).data.receiverId == userA
+          && get(reversePath).data.status == 'accepted'
+        );
+    }
+
+    function acceptedFriendshipAfterByReceiver(userA, userB) {
+      let forwardId = 'req_' + userA + '_' + userB;
+      let reverseId = 'req_' + userB + '_' + userA;
+      let forwardPath =
+        /databases/$(database)/documents/friend_requests/$(forwardId);
+      let reversePath =
+        /databases/$(database)/documents/friend_requests/$(reverseId);
+      return (
+          existsAfter(forwardPath)
+          && getAfter(forwardPath).data.senderId == userA
+          && getAfter(forwardPath).data.receiverId == userB
+          && getAfter(forwardPath).data.receiverId == request.auth.uid
+          && getAfter(forwardPath).data.status == 'accepted'
+        )
+        || (
+          existsAfter(reversePath)
+          && getAfter(reversePath).data.senderId == userB
+          && getAfter(reversePath).data.receiverId == userA
+          && getAfter(reversePath).data.receiverId == request.auth.uid
+          && getAfter(reversePath).data.status == 'accepted'
+        );
+    }
+
+    function removedFriendshipAfter(userA, userB) {
+      let forwardId = 'req_' + userA + '_' + userB;
+      let reverseId = 'req_' + userB + '_' + userA;
+      let forwardPath =
+        /databases/$(database)/documents/friend_requests/$(forwardId);
+      let reversePath =
+        /databases/$(database)/documents/friend_requests/$(reverseId);
+      return (
+          existsAfter(forwardPath)
+          && getAfter(forwardPath).data.senderId == userA
+          && getAfter(forwardPath).data.receiverId == userB
+          && getAfter(forwardPath).data.status == 'removed'
+        )
+        || (
+          existsAfter(reversePath)
+          && getAfter(reversePath).data.senderId == userB
+          && getAfter(reversePath).data.receiverId == userA
+          && getAfter(reversePath).data.status == 'removed'
+        );
     }
 
     function isOwner(userId) {
@@ -25,6 +113,22 @@ service cloud.firestore {
         );
     }
 
+    function isApprovedRoomMember(roomId) {
+      return isAuth()
+        && exists(
+          /databases/$(database)/documents/rooms/$(roomId)
+        )
+        && get(
+          /databases/$(database)/documents/rooms/$(roomId)
+        ).data.memberIds.hasAny([request.auth.uid])
+        && exists(
+          /databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)
+        )
+        && get(
+          /databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)
+        ).data.approvalStatus == 'approved';
+    }
+
     function hasProtectedStaffFields() {
       return request.resource.data.keys().hasAny([
         'developerAccess',
@@ -41,21 +145,262 @@ service cloud.firestore {
       ]);
     }
 
+    function hasProtectedRewardFields() {
+      return request.resource.data.keys().hasAny([
+        'disciplineCoins',
+        'rewardedTaskKeys',
+        'dailyCoinEarned',
+        'monthlyDeadlineCoinEarned',
+        'avatarExperienceLedger',
+        'avatarExperience',
+        'avatarLevel',
+        'unlockedAvatarItems',
+        'rewardLedgerBaselineVersion',
+        'rewardLedgerBaselineId',
+        'rewardLedgerBaselinedAt',
+        'avatarProfile',
+        'avatarSeries',
+        'backgroundTheme'
+      ]);
+    }
+
+    function changesProtectedRewardFields() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        'disciplineCoins',
+        'rewardedTaskKeys',
+        'dailyCoinEarned',
+        'monthlyDeadlineCoinEarned',
+        'avatarExperienceLedger',
+        'avatarExperience',
+        'avatarLevel',
+        'unlockedAvatarItems',
+        'rewardLedgerBaselineVersion',
+        'rewardLedgerBaselineId',
+        'rewardLedgerBaselinedAt',
+        'avatarProfile',
+        'avatarSeries',
+        'backgroundTheme'
+      ]);
+    }
+
+    function hasGroupProjectionFields() {
+      return request.resource.data.keys().hasAny([
+        'groupId', 'groupName', 'isGroupOwner'
+      ]);
+    }
+
+    function doesNotAddOrChangeLegacyGroupProjection() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['groupId', 'groupName', 'isGroupOwner']);
+      return !changed
+        || (
+          resource.data.keys().hasAny([
+            'groupId', 'groupName', 'isGroupOwner'
+          ])
+          &&
+          !request.resource.data.keys().hasAny([
+            'groupId', 'groupName', 'isGroupOwner'
+          ])
+        );
+    }
+
+    function relationshipMembershipAfter(scopeType, scopeId, userId) {
+      return getAfter(
+        /databases/$(database)/documents/relationship_memberships/$(scopeType + '--' + scopeId + '--' + userId)
+      ).data;
+    }
+
+    function hasActiveRelationshipMembershipAfter(
+      scopeType,
+      scopeId,
+      userId,
+      role
+    ) {
+      return existsAfter(
+          /databases/$(database)/documents/relationship_memberships/$(scopeType + '--' + scopeId + '--' + userId)
+        )
+        && relationshipMembershipAfter(scopeType, scopeId, userId).status
+          == 'active'
+        && relationshipMembershipAfter(scopeType, scopeId, userId).role
+          == role;
+    }
+
+    function hasEndedRelationshipMembershipAfter(
+      scopeType,
+      scopeId,
+      userId
+    ) {
+      return existsAfter(
+          /databases/$(database)/documents/relationship_memberships/$(scopeType + '--' + scopeId + '--' + userId)
+        )
+        && relationshipMembershipAfter(scopeType, scopeId, userId).status
+          == 'ended';
+    }
+
+    function hasRelationshipMembership(scopeType, scopeId, userId) {
+      return exists(
+          /databases/$(database)/documents/relationship_memberships/$(scopeType + '--' + scopeId + '--' + userId)
+        )
+        && get(
+          /databases/$(database)/documents/relationship_memberships/$(scopeType + '--' + scopeId + '--' + userId)
+        ).data.status in ['active', 'ended'];
+    }
+
+    function changesOnlyOwnGroupMembership(groupId) {
+      let beforeMembers = resource.data.memberIds.toSet();
+      let afterMembers = request.resource.data.memberIds.toSet();
+      let addedMembers = afterMembers.difference(beforeMembers);
+      let removedMembers = beforeMembers.difference(afterMembers);
+      return request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['memberIds', 'updatedAt'])
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.ownerId in request.resource.data.memberIds
+        && (
+          (
+            addedMembers.hasOnly([request.auth.uid])
+            && removedMembers.size() == 0
+            && resource.data.status == 'active'
+            && hasActiveRelationshipMembershipAfter(
+              'group',
+              groupId,
+              request.auth.uid,
+              'member'
+            )
+          )
+          || (
+            removedMembers.hasOnly([request.auth.uid])
+            && addedMembers.size() == 0
+            && !existsAfter(
+              /databases/$(database)/documents/groups/$(groupId)/member_summaries/$(request.auth.uid)
+            )
+            && hasEndedRelationshipMembershipAfter(
+              'group',
+              groupId,
+              request.auth.uid
+            )
+          )
+        );
+    }
+
     // ─── /users/{userId} ──────────────────────────────────────────────
     match /users/{userId} {
-      allow read: if isAuth();
-      allow create: if isOwner(userId) && !hasProtectedStaffFields();
-      allow update: if isOwner(userId) && !changesProtectedStaffFields();
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && !hasProtectedStaffFields()
+        && !hasProtectedRewardFields()
+        && !hasGroupProjectionFields();
+      allow update: if (
+          isOwner(userId)
+          && !changesProtectedStaffFields()
+          && !changesProtectedRewardFields()
+          && doesNotAddOrChangeLegacyGroupProjection()
+        );
       allow delete: if false;
 
       // ─── /users/{userId}/friends/{friendId} ───────────────────────
       match /friends/{friendId} {
         allow read: if isOwner(userId) || (isAuth() && request.auth.uid == friendId);
-        allow write: if isAuth()
+        allow create: if isAuth()
           && request.resource.data.id == friendId
-          && (isOwner(userId) || request.auth.uid == friendId);
-        allow delete: if isOwner(userId) || (isAuth() && request.auth.uid == friendId);
+          && acceptedFriendshipAfterByReceiver(userId, friendId);
+        allow update: if isOwner(userId)
+          && request.resource.data.id == friendId
+          && acceptedFriendship(userId, friendId);
+        allow delete: if isAuth()
+          && request.auth.uid in [userId, friendId]
+          && removedFriendshipAfter(userId, friendId)
+          && !existsAfter(
+            /databases/$(database)/documents/users/$(userId)/friends/$(friendId)
+          )
+          && !existsAfter(
+            /databases/$(database)/documents/users/$(friendId)/friends/$(userId)
+          );
       }
+    }
+
+    // ─── /public_profiles/{userId} ────────────────────────────────────
+    // Explicit social lookup projection. Raw tasks, health, family and group
+    // membership data remain private in /users/{userId}.
+    match /public_profiles/{userId} {
+      function validPublicAvatar() {
+        let avatar = request.resource.data.avatarProfile;
+        return avatar.keys().hasOnly([
+            'skinToneIndex', 'faceShapeIndex', 'hairStyleIndex',
+            'hairColorIndex', 'eyeStyleIndex', 'eyebrowStyleIndex',
+            'mouthStyleIndex', 'outfitStyleIndex', 'outfitColorIndex',
+            'accessoryIndex', 'backgroundColorIndex', 'avatarIconIndex'
+          ])
+          && avatar.keys().hasAll([
+            'skinToneIndex', 'faceShapeIndex', 'hairStyleIndex',
+            'hairColorIndex', 'eyeStyleIndex', 'eyebrowStyleIndex',
+            'mouthStyleIndex', 'outfitStyleIndex', 'outfitColorIndex',
+            'accessoryIndex', 'backgroundColorIndex', 'avatarIconIndex'
+          ])
+          && avatar.skinToneIndex is int
+          && avatar.faceShapeIndex is int
+          && avatar.hairStyleIndex is int
+          && avatar.hairColorIndex is int
+          && avatar.eyeStyleIndex is int
+          && avatar.eyebrowStyleIndex is int
+          && avatar.mouthStyleIndex is int
+          && avatar.outfitStyleIndex is int
+          && avatar.outfitColorIndex is int
+          && avatar.accessoryIndex is int
+          && avatar.backgroundColorIndex is int
+          && avatar.avatarIconIndex is int;
+      }
+
+      function validPublicProfile() {
+        return request.resource.data.keys().hasOnly([
+            'schemaVersion', 'userId', 'username', 'myNudgeId',
+            'nickname', 'signature', 'avatarProfile', 'accentColor',
+            'planetCount', 'familyRole',
+            'profileTitleBadgeKey', 'unlockedBadgeDates', 'updatedAt'
+          ])
+          && request.resource.data.keys().hasAll([
+            'schemaVersion', 'userId', 'username', 'myNudgeId',
+            'nickname', 'signature', 'avatarProfile', 'accentColor',
+            'planetCount', 'familyRole',
+            'profileTitleBadgeKey', 'unlockedBadgeDates', 'updatedAt'
+          ])
+          && request.resource.data.schemaVersion == 1
+          && request.resource.data.userId == userId
+          && request.resource.data.username is string
+          && request.resource.data.username.size() > 0
+          && request.resource.data.username.size() <= 40
+          && request.resource.data.myNudgeId is string
+          && request.resource.data.myNudgeId.size() > 0
+          && request.resource.data.myNudgeId.size() <= 40
+          && request.resource.data.nickname is string
+          && request.resource.data.nickname.size() > 0
+          && request.resource.data.nickname.size() <= 40
+          && request.resource.data.signature is string
+          && request.resource.data.signature.size() <= 160
+          && validPublicAvatar()
+          && request.resource.data.accentColor in [
+            'purple', 'blue', 'teal', 'green',
+            'orange', 'pink', 'red', 'indigo'
+          ]
+          && request.resource.data.planetCount is int
+          && request.resource.data.planetCount >= 0
+          && request.resource.data.familyRole in [
+            'personal', 'guardian', 'child'
+          ]
+          && request.resource.data.profileTitleBadgeKey is string
+          && request.resource.data.profileTitleBadgeKey.size() <= 80
+          && request.resource.data.unlockedBadgeDates is map
+          && request.resource.data.updatedAt is string;
+      }
+
+      allow read: if isAuth();
+      allow create: if isOwner(userId)
+        && validPublicProfile()
+        && request.resource.data.avatarProfile.faceShapeIndex in [0, 3, 6, 9]
+        && request.resource.data.avatarProfile.avatarIconIndex in [0, 3, 6, 9];
+      allow update: if isOwner(userId)
+        && validPublicProfile()
+        && request.resource.data.avatarProfile == resource.data.avatarProfile;
+      allow delete: if false;
     }
 
     // ─── /friend_requests/{requestId} ────────────────────────────────
@@ -66,7 +411,12 @@ service cloud.firestore {
         resource.data.receiverId == request.auth.uid
       );
       allow create: if isAuth()
+        && requestId
+          == 'req_' + request.resource.data.senderId
+            + '_' + request.resource.data.receiverId
         && request.resource.data.senderId == request.auth.uid
+        && isAccountReferenceableAfter(request.resource.data.senderId)
+        && isAccountReferenceableAfter(request.resource.data.receiverId)
         && request.resource.data.status == 'pending'
         && request.resource.data.keys().hasAll([
           'senderId', 'senderNudgeId', 'senderName',
@@ -76,16 +426,50 @@ service cloud.firestore {
       allow update: if isAuth() && (
         // Receiver can accept or decline
         (resource.data.receiverId == request.auth.uid
+          && resource.data.status == 'pending'
+          && isAccountReferenceableAfter(resource.data.senderId)
+          && isAccountReferenceableAfter(resource.data.receiverId)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
           && request.resource.data.status in ['accepted', 'declined'])
+          && (
+            request.resource.data.status == 'declined'
+            || (
+              existsAfter(
+                /databases/$(database)/documents/users/$(resource.data.senderId)/friends/$(resource.data.receiverId)
+              )
+              && existsAfter(
+                /databases/$(database)/documents/users/$(resource.data.receiverId)/friends/$(resource.data.senderId)
+              )
+            )
+          )
         ||
         // Sender can cancel their own pending request
         (resource.data.senderId == request.auth.uid
+          && resource.data.status == 'pending'
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
           && request.resource.data.status == 'cancelled')
         ||
+        // Either participant can revoke a friendship, but both friend
+        // projections must be removed in the same atomic batch.
+        (resource.data.status == 'accepted'
+          && request.auth.uid in [
+            resource.data.senderId,
+            resource.data.receiverId
+          ]
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+          && request.resource.data.status == 'removed'
+          && !existsAfter(
+            /databases/$(database)/documents/users/$(resource.data.senderId)/friends/$(resource.data.receiverId)
+          )
+          && !existsAfter(
+            /databases/$(database)/documents/users/$(resource.data.receiverId)/friends/$(resource.data.senderId)
+          ))
+        ||
         // Sender can resend a request (update all fields, but must keep sender/receiver IDs)
         (resource.data.senderId == request.auth.uid
+          && resource.data.status in ['cancelled', 'declined', 'removed']
+          && isAccountReferenceableAfter(resource.data.senderId)
+          && isAccountReferenceableAfter(resource.data.receiverId)
           && request.resource.data.senderId == resource.data.senderId
           && request.resource.data.receiverId == resource.data.receiverId
           && request.resource.data.status == 'pending')
@@ -95,11 +479,49 @@ service cloud.firestore {
 
     // ─── /friend_messages/{messageId} ────────────────────────────────
     match /friend_messages/{messageId} {
-      allow read: if isAuth();
+      allow read: if isAuth() && (
+        resource.data.senderId == request.auth.uid
+        || resource.data.receiverId == request.auth.uid
+      );
       allow create: if isAuth()
         && request.resource.data.senderId == request.auth.uid
-        && request.resource.data.keys().hasAll(['receiverId', 'senderId', 'senderName', 'content', 'type', 'createdAt']);
-      allow update, delete: if isAuth() && resource.data.senderId == request.auth.uid;
+        && request.resource.data.receiverId is string
+        && request.resource.data.receiverId != request.auth.uid
+        && isAccountReferenceableAfter(request.resource.data.senderId)
+        && isAccountReferenceableAfter(request.resource.data.receiverId)
+        && areMutualFriends(
+          request.auth.uid,
+          request.resource.data.receiverId
+        )
+        && acceptedFriendship(
+          request.auth.uid,
+          request.resource.data.receiverId
+        )
+        && request.resource.data.keys().hasOnly([
+          'receiverId', 'senderId', 'senderName', 'senderAvatar',
+          'content', 'type', 'createdAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'receiverId', 'senderId', 'senderName', 'senderAvatar',
+          'content', 'type', 'createdAt'
+        ])
+        && request.resource.data.senderName is string
+        && request.resource.data.senderName.size() > 0
+        && request.resource.data.senderName.size() <= 40
+        && request.resource.data.senderAvatar is string
+        && request.resource.data.senderAvatar.size() <= 16
+        && request.resource.data.content is string
+        && request.resource.data.content.size() > 0
+        && request.resource.data.content.size() <= 500
+        && request.resource.data.type in ['text', 'cheer']
+        && (
+          (
+            request.resource.data.createdAt is string
+            && request.resource.data.createdAt.size() <= 40
+          )
+          || request.resource.data.createdAt is timestamp
+        );
+      allow update, delete: if false;
     }
 
     // ─── /guardian_requests/{requestId} ────────────────────────────────
@@ -110,66 +532,1706 @@ service cloud.firestore {
       );
       allow create: if isAuth()
         && request.resource.data.senderId == request.auth.uid
-        && request.resource.data.status == 'pending';
+        && isAccountReferenceableAfter(request.resource.data.senderId)
+        && isAccountReferenceableAfter(request.resource.data.receiverId)
+        && request.resource.data.status == 'pending'
+        && request.resource.data.senderId != request.resource.data.receiverId
+        && request.resource.data.senderRole in ['guardian', 'child']
+        && request.resource.data.receiverRole in ['guardian', 'child']
+        && request.resource.data.senderRole != request.resource.data.receiverRole
+        && request.resource.data.keys().hasAll([
+          'senderId', 'senderNudgeId', 'senderNickname', 'senderRole',
+          'receiverId', 'receiverNudgeId', 'receiverRole',
+          'status', 'createdAt', 'updatedAt'
+        ]);
       allow update: if isAuth()
         && (
-          (resource.data.receiverId == request.auth.uid && request.resource.data.status in ['accepted', 'declined']) ||
-          (resource.data.senderId == request.auth.uid && request.resource.data.status == 'declined')
+          (resource.data.receiverId == request.auth.uid
+            && (
+              request.resource.data.status != 'accepted'
+              || (
+                isAccountReferenceableAfter(resource.data.senderId)
+                && isAccountReferenceableAfter(resource.data.receiverId)
+              )
+            )
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+            && request.resource.data.status in ['accepted', 'declined']
+            && (
+              request.resource.data.status == 'declined'
+              || existsAfter(
+                /databases/$(database)/documents/family_links/$(requestId)
+              )
+            )) ||
+          (resource.data.senderId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+            && request.resource.data.status == 'cancelled') ||
+          ((resource.data.senderId == request.auth.uid
+              || resource.data.receiverId == request.auth.uid)
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['status', 'updatedAt'])
+            && request.resource.data.status == 'ended'
+            && getAfter(
+              /databases/$(database)/documents/family_links/$(requestId)
+            ).data.status == 'ended'
+            && getAfter(
+              /databases/$(database)/documents/family_links/$(requestId)
+            ).data.endedBy == request.auth.uid)
         );
+      // Preserve the request lifecycle for Cloud notification and audit
+      // projection. Senders cancel; receivers decline.
+      allow delete: if false;
+    }
+
+    // ─── /family_links/{linkId} ──────────────────────────────────────
+    // Canonical family relationship. Encouragements and goals live under
+    // the relationship, never in either participant's private user document.
+    match /family_links/{linkId} {
+      function isFamilyParticipant() {
+        return isAuth()
+          && resource.data.participantIds.hasAny([request.auth.uid]);
+      }
+
+      function isActiveFamilyParticipant() {
+        return isFamilyParticipant() && resource.data.status == 'active';
+      }
+
+      function validConsentScopes(scopes) {
+        return scopes.keys().hasOnly([
+            'summary', 'weeklyReport', 'taskCategories', 'healthTrends'
+          ])
+          && scopes.keys().hasAll([
+            'summary', 'weeklyReport', 'taskCategories', 'healthTrends'
+          ])
+          && scopes.summary is bool
+          && scopes.weeklyReport is bool
+          && scopes.taskCategories is bool
+          && scopes.healthTrends is bool;
+      }
+
+      function futureSummaryObeysConsent(scopes) {
+        let summaryPath =
+          /databases/$(database)/documents/family_links/$(linkId)/summaries/current;
+        let summary = getAfter(summaryPath).data;
+        return existsAfter(summaryPath)
+          && summary.childId == resource.data.childId
+          && (
+            scopes.summary == true
+            || !summary.keys().hasAny(['summary'])
+          )
+          && (
+            scopes.weeklyReport == true
+            || !summary.keys().hasAny(['weeklyReport'])
+          )
+          && (
+            scopes.taskCategories == true
+            || !summary.keys().hasAny(['taskCategories'])
+          )
+          && (
+            scopes.healthTrends == true
+            || !summary.keys().hasAny(['healthTrends'])
+          );
+      }
+
+      allow read: if isFamilyParticipant();
+
+      allow create: if isAuth()
+        && isAccountReferenceableAfter(request.resource.data.guardianId)
+        && isAccountReferenceableAfter(request.resource.data.childId)
+        && existsAfter(
+          /databases/$(database)/documents/guardian_requests/$(linkId)
+        )
+        && getAfter(
+          /databases/$(database)/documents/guardian_requests/$(linkId)
+        ).data.receiverId == request.auth.uid
+        && getAfter(
+          /databases/$(database)/documents/guardian_requests/$(linkId)
+        ).data.status == 'accepted'
+        && request.resource.data.status == 'active'
+        && request.resource.data.schemaVersion == 1
+        && request.resource.data.guardianId
+          == (
+            getAfter(
+              /databases/$(database)/documents/guardian_requests/$(linkId)
+            ).data.senderRole == 'guardian'
+              ? getAfter(
+                  /databases/$(database)/documents/guardian_requests/$(linkId)
+                ).data.senderId
+              : getAfter(
+                  /databases/$(database)/documents/guardian_requests/$(linkId)
+                ).data.receiverId
+          )
+        && request.resource.data.childId
+          == (
+            getAfter(
+              /databases/$(database)/documents/guardian_requests/$(linkId)
+            ).data.senderRole == 'child'
+              ? getAfter(
+                  /databases/$(database)/documents/guardian_requests/$(linkId)
+                ).data.senderId
+              : getAfter(
+                  /databases/$(database)/documents/guardian_requests/$(linkId)
+                ).data.receiverId
+          )
+        && request.resource.data.guardianId != request.resource.data.childId
+        && request.resource.data.participantIds.size() == 2
+        && request.resource.data.participantIds.hasOnly([
+          request.resource.data.guardianId,
+          request.resource.data.childId
+        ])
+        && validConsentScopes(request.resource.data.consentScopes)
+        && request.resource.data.consentScopes.summary == false
+        && request.resource.data.consentScopes.weeklyReport == false
+        && request.resource.data.consentScopes.taskCategories == false
+        && request.resource.data.consentScopes.healthTrends == false
+        && hasActiveRelationshipMembershipAfter(
+          'family',
+          linkId,
+          request.resource.data.guardianId,
+          'guardian'
+        )
+        && hasActiveRelationshipMembershipAfter(
+          'family',
+          linkId,
+          request.resource.data.childId,
+          'child'
+        )
+        && request.resource.data.keys().hasOnly([
+          'schemaVersion', 'guardianId', 'childId', 'participantIds',
+          'status', 'consentScopes', 'createdAt', 'updatedAt'
+        ]);
+
+      allow update: if isActiveFamilyParticipant()
+        && (
+          (
+            request.auth.uid == resource.data.childId
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['consentScopes', 'updatedAt'])
+            && validConsentScopes(request.resource.data.consentScopes)
+            && futureSummaryObeysConsent(
+              request.resource.data.consentScopes
+            )
+          )
+          || (
+            request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['status', 'endedBy', 'endedAt', 'updatedAt'])
+            && request.resource.data.status == 'ended'
+            && request.resource.data.endedBy == request.auth.uid
+            && hasEndedRelationshipMembershipAfter(
+              'family',
+              linkId,
+              resource.data.guardianId
+            )
+            && hasEndedRelationshipMembershipAfter(
+              'family',
+              linkId,
+              resource.data.childId
+            )
+          )
+        );
+      allow delete: if false;
+
+      match /encouragements/{encouragementId} {
+        function familyLink() {
+          return get(
+            /databases/$(database)/documents/family_links/$(linkId)
+          ).data;
+        }
+
+        function isFamilyParticipant() {
+          return isAuth()
+            && familyLink().participantIds.hasAny([request.auth.uid]);
+        }
+
+        allow read: if isFamilyParticipant();
+        allow create: if isFamilyParticipant()
+          && familyLink().status == 'active'
+          && request.auth.uid == familyLink().guardianId
+          && request.resource.data.senderId == familyLink().guardianId
+          && request.resource.data.recipientId == familyLink().childId
+          && request.resource.data.status == 'sent'
+          && request.resource.data.schemaVersion == 1
+          && request.resource.data.keys().hasOnly([
+            'schemaVersion', 'senderId', 'recipientId', 'title', 'message',
+            'status', 'createdAt'
+          ]);
+        allow update: if isFamilyParticipant()
+          && familyLink().status == 'active'
+          && request.auth.uid == familyLink().childId
+          && resource.data.status == 'sent'
+          && request.resource.data.status == 'acknowledged'
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'acknowledgedAt']);
+        allow delete: if false;
+      }
+
+      match /goals/{goalId} {
+        function familyLink() {
+          return get(
+            /databases/$(database)/documents/family_links/$(linkId)
+          ).data;
+        }
+
+        function isFamilyParticipant() {
+          return isAuth()
+            && familyLink().participantIds.hasAny([request.auth.uid]);
+        }
+
+        allow read: if isFamilyParticipant();
+        allow create: if isFamilyParticipant()
+          && familyLink().status == 'active'
+          && request.auth.uid == familyLink().guardianId
+          && request.resource.data.proposedBy == familyLink().guardianId
+          && request.resource.data.decisionBy == familyLink().childId
+          && request.resource.data.status == 'proposed'
+          && request.resource.data.schemaVersion == 1
+          && request.resource.data.keys().hasOnly([
+            'schemaVersion', 'title', 'message', 'status', 'proposedBy',
+            'decisionBy', 'createdAt', 'updatedAt'
+          ]);
+        allow update: if isFamilyParticipant()
+          && familyLink().status == 'active'
+          && request.auth.uid == familyLink().childId
+          && (
+            (
+              resource.data.status == 'proposed'
+              && request.resource.data.status in ['accepted', 'declined']
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly([
+                  'status', 'acceptedAt', 'declinedAt', 'updatedAt'
+                ])
+            )
+            || (
+              resource.data.status == 'accepted'
+              && request.resource.data.status == 'completed'
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['status', 'completedAt', 'updatedAt'])
+            )
+          );
+        allow delete: if false;
+      }
+
+      match /summaries/{summaryId} {
+        function familyLink() {
+          return get(
+            /databases/$(database)/documents/family_links/$(linkId)
+          ).data;
+        }
+
+        function familyLinkAfter() {
+          return getAfter(
+            /databases/$(database)/documents/family_links/$(linkId)
+          ).data;
+        }
+
+        function isFamilyParticipant() {
+          return isAuth()
+            && familyLink().participantIds.hasAny([request.auth.uid]);
+        }
+
+        function dataObeysConsent(data, scopes) {
+          return (
+              scopes.summary == true
+              || !data.keys().hasAny(['summary'])
+            )
+            && (
+              scopes.weeklyReport == true
+              || !data.keys().hasAny(['weeklyReport'])
+            )
+            && (
+              scopes.taskCategories == true
+              || !data.keys().hasAny(['taskCategories'])
+            )
+            && (
+              scopes.healthTrends == true
+              || !data.keys().hasAny(['healthTrends'])
+            );
+        }
+
+        allow read: if isFamilyParticipant()
+          && (
+            request.auth.uid == familyLink().childId
+            || dataObeysConsent(
+              resource.data,
+              familyLink().consentScopes
+            )
+          );
+        allow create, update: if summaryId == 'current'
+          && isFamilyParticipant()
+          && familyLinkAfter().status == 'active'
+          && request.auth.uid == familyLinkAfter().childId
+          && request.resource.data.childId == familyLinkAfter().childId
+          && request.resource.data.schemaVersion == 1
+          && request.resource.data.keys().hasOnly([
+            'schemaVersion', 'childId', 'summary', 'weeklyReport',
+            'taskCategories', 'healthTrends', 'updatedAt'
+          ])
+          && dataObeysConsent(
+            request.resource.data,
+            familyLinkAfter().consentScopes
+          );
+        allow delete: if false;
+      }
+
+      match /bond_events/{eventId} {
+        function familyLink() {
+          return get(
+            /databases/$(database)/documents/family_links/$(linkId)
+          ).data;
+        }
+
+        function isFamilyParticipant() {
+          return isAuth()
+            && familyLink().participantIds.hasAny([request.auth.uid]);
+        }
+
+        function validAcknowledgementEvent() {
+          return request.resource.data.type == 'acknowledgement'
+            && request.resource.data.points == 3
+            && eventId == 'encouragement_' + request.resource.data.sourceId
+            && getAfter(
+              /databases/$(database)/documents/family_links/$(linkId)/encouragements/$(request.resource.data.sourceId)
+            ).data.status == 'acknowledged';
+        }
+
+        function validGoalCompletedEvent() {
+          return request.resource.data.type == 'goalCompleted'
+            && request.resource.data.points == 10
+            && eventId == 'goal_' + request.resource.data.sourceId
+            && getAfter(
+              /databases/$(database)/documents/family_links/$(linkId)/goals/$(request.resource.data.sourceId)
+            ).data.status == 'completed';
+        }
+
+        allow read: if isFamilyParticipant();
+        allow create: if isFamilyParticipant()
+          && familyLink().status == 'active'
+          && request.auth.uid == familyLink().childId
+          && request.resource.data.actorId == familyLink().childId
+          && request.resource.data.schemaVersion == 1
+          && request.resource.data.keys().hasOnly([
+            'schemaVersion', 'type', 'sourceId', 'actorId', 'points',
+            'createdAt'
+          ])
+          && (validAcknowledgementEvent() || validGoalCompletedEvent());
+        allow update, delete: if false;
+      }
+    }
+
+    // ─── /groups/{groupId} ────────────────────────────────────────────
+    // Canonical group state. Scoped roles live in relationship_memberships;
+    // clients may not recreate the retired single-group user projection.
+    match /groups/{groupId} {
+      function managerRemovesOneMember() {
+        let beforeMembers = resource.data.memberIds.toSet();
+        let afterMembers = request.resource.data.memberIds.toSet();
+        let removedMembers = beforeMembers.difference(afterMembers);
+        let change = request.resource.data.lastMembershipChange;
+        return resource.data.ownerId == request.auth.uid
+          && request.resource.data.ownerId == resource.data.ownerId
+          && request.resource.data.ownerId in request.resource.data.memberIds
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['memberIds', 'lastMembershipChange', 'updatedAt'])
+          && beforeMembers.difference(afterMembers).size() == 1
+          && afterMembers.difference(beforeMembers).size() == 0
+          && change.keys().hasOnly(['type', 'memberId', 'by', 'at'])
+          && change.type == 'member_removed'
+          && change.by == request.auth.uid
+          && change.memberId != resource.data.ownerId
+          && removedMembers.hasOnly([change.memberId])
+          && !existsAfter(
+            /databases/$(database)/documents/groups/$(groupId)/member_summaries/$(change.memberId)
+          )
+          && !existsAfter(
+            /databases/$(database)/documents/groups/$(groupId)/challenges/current/participants/$(change.memberId)
+          )
+          && hasEndedRelationshipMembershipAfter(
+            'group',
+            groupId,
+            change.memberId
+          );
+      }
+
+      function managerTransfersOwnership() {
+        let change = request.resource.data.lastMembershipChange;
+        return resource.data.ownerId == request.auth.uid
+          && request.resource.data.ownerId != resource.data.ownerId
+          && request.resource.data.ownerId in resource.data.memberIds
+          && request.resource.data.memberIds == resource.data.memberIds
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['ownerId', 'lastMembershipChange', 'updatedAt'])
+          && change.keys().hasOnly([
+            'type', 'fromMemberId', 'toMemberId', 'by', 'at'
+          ])
+          && change.type == 'ownership_transferred'
+          && change.fromMemberId == resource.data.ownerId
+          && change.toMemberId == request.resource.data.ownerId
+          && change.by == request.auth.uid
+          && hasActiveRelationshipMembershipAfter(
+            'group',
+            groupId,
+            change.fromMemberId,
+            'member'
+          )
+          && hasActiveRelationshipMembershipAfter(
+            'group',
+            groupId,
+            change.toMemberId,
+            'manager'
+          );
+      }
+
+      allow read: if isAuth();
+      allow create: if isAuth()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.memberIds.hasOnly([request.auth.uid])
+        && request.resource.data.status == 'active'
+        && hasActiveRelationshipMembershipAfter(
+          'group',
+          groupId,
+          request.auth.uid,
+          'manager'
+        );
+      allow update: if isAuth() && (
+        (
+          resource.data.ownerId == request.auth.uid
+          && resource.data.status in ['active', 'archived']
+          && request.resource.data.ownerId == resource.data.ownerId
+          && request.resource.data.ownerId in request.resource.data.memberIds
+          && request.resource.data.status in ['active', 'archived']
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['name', 'status', 'updatedAt'])
+        )
+        || changesOnlyOwnGroupMembership(groupId)
+        || managerRemovesOneMember()
+        || managerTransfersOwnership()
+      );
+      allow delete: if isAuth()
+        && resource.data.ownerId == request.auth.uid
+        && resource.data.memberIds.size() == 1
+        && resource.data.memberIds.hasOnly([request.auth.uid])
+        && !existsAfter(
+          /databases/$(database)/documents/groups/$(groupId)/member_summaries/$(request.auth.uid)
+        )
+        && hasEndedRelationshipMembershipAfter(
+          'group',
+          groupId,
+          request.auth.uid
+        );
+
+      match /challenges/{challengeId} {
+        function group() {
+          return get(
+            /databases/$(database)/documents/groups/$(groupId)
+          ).data;
+        }
+
+        function isActiveGroupMember() {
+          return isAuth()
+            && group().status == 'active'
+            && group().memberIds.hasAny([request.auth.uid]);
+        }
+
+        function isGroupManager() {
+          return isActiveGroupMember()
+            && group().ownerId == request.auth.uid;
+        }
+
+        allow read: if isActiveGroupMember();
+        allow create, update: if challengeId == 'current'
+          && isGroupManager()
+          && request.resource.data.schemaVersion == 2
+          && request.resource.data.challengeId is string
+          && request.resource.data.challengeId.size() > 0
+          && request.resource.data.groupId == groupId
+          && request.resource.data.groupName == group().name
+          && request.resource.data.publishedBy == group().ownerId
+          && request.resource.data.status == 'active'
+          && request.resource.data.days is int
+          && request.resource.data.days >= 1
+          && request.resource.data.days <= 365
+          && request.resource.data.keys().hasOnly([
+            'schemaVersion', 'challengeId', 'groupId', 'groupName', 'type',
+            'days', 'reward', 'status', 'publishedBy', 'updatedAt'
+          ]);
+        allow delete: if isGroupManager();
+
+        match /participants/{memberId} {
+          function currentChallenge() {
+            return get(
+              /databases/$(database)/documents/groups/$(groupId)/challenges/$(challengeId)
+            ).data;
+          }
+
+          function groupAfter() {
+            return getAfter(
+              /databases/$(database)/documents/groups/$(groupId)
+            ).data;
+          }
+
+          function validParticipationShape() {
+            let challenge = currentChallenge();
+            let completed = request.resource.data.status == 'completed';
+            return challengeId == 'current'
+              && challenge.schemaVersion == 2
+              && challenge.status == 'active'
+              && request.auth.uid == memberId
+              && request.resource.data.schemaVersion == 1
+              && request.resource.data.groupId == groupId
+              && request.resource.data.challengeId == challenge.challengeId
+              && request.resource.data.memberId == memberId
+              && request.resource.data.totalDays == challenge.days
+              && request.resource.data.completedDays is int
+              && request.resource.data.completedDays >= 0
+              && request.resource.data.completedDays <= challenge.days
+              && request.resource.data.joinedAt is string
+              && request.resource.data.updatedAt is string
+              && request.resource.data.keys().hasAll([
+                'schemaVersion', 'groupId', 'challengeId', 'memberId',
+                'status', 'completedDays', 'totalDays', 'joinedAt',
+                'updatedAt'
+              ])
+              && (
+                (
+                  !completed
+                  && request.resource.data.status == 'joined'
+                  && request.resource.data.completedDays < challenge.days
+                  && !request.resource.data.keys().hasAny(['completedAt'])
+                )
+                || (
+                  completed
+                  && request.resource.data.completedDays == challenge.days
+                  && request.resource.data.completedAt is string
+                )
+              )
+              && request.resource.data.keys().hasOnly([
+                'schemaVersion', 'groupId', 'challengeId', 'memberId',
+                'status', 'completedDays', 'totalDays', 'joinedAt',
+                'updatedAt', 'completedAt'
+              ]);
+          }
+
+          allow read: if isActiveGroupMember();
+          allow create: if isActiveGroupMember()
+            && validParticipationShape()
+            && request.resource.data.status == 'joined'
+            && request.resource.data.completedDays == 0;
+          allow update: if isActiveGroupMember()
+            && validParticipationShape()
+            && request.resource.data.memberId == resource.data.memberId
+            && (
+              (
+                request.resource.data.challengeId == resource.data.challengeId
+                && request.resource.data.joinedAt == resource.data.joinedAt
+                && !(
+                  resource.data.status == 'completed'
+                  && request.resource.data.status != 'completed'
+                )
+              )
+              || (
+                request.resource.data.challengeId
+                  != resource.data.challengeId
+                && request.resource.data.status == 'joined'
+                && request.resource.data.completedDays == 0
+              )
+            );
+          allow delete: if isAuth() && (
+            (
+              request.auth.uid == memberId
+              && (
+                resource.data.status == 'joined'
+                || !groupAfter().memberIds.hasAny([memberId])
+              )
+            )
+            || (
+              group().ownerId == request.auth.uid
+              && !groupAfter().memberIds.hasAny([memberId])
+            )
+          );
+        }
+      }
+
+      match /study_schedules/{scheduleId} {
+        function group() {
+          return get(
+            /databases/$(database)/documents/groups/$(groupId)
+          ).data;
+        }
+
+        function isActiveGroupMember() {
+          return isAuth()
+            && group().status == 'active'
+            && group().memberIds.hasAny([request.auth.uid]);
+        }
+
+        function isGroupManager() {
+          return isActiveGroupMember()
+            && group().ownerId == request.auth.uid;
+        }
+
+        allow read: if isActiveGroupMember();
+        allow create, update: if isGroupManager()
+          && request.resource.data.schemaVersion == 1
+          && request.resource.data.groupId == groupId
+          && request.resource.data.publishedBy == group().ownerId
+          && request.resource.data.status == 'scheduled'
+          && request.resource.data.keys().hasOnly([
+            'schemaVersion', 'groupId', 'title', 'meta', 'status',
+            'publishedBy', 'createdAt'
+          ]);
+        allow delete: if isGroupManager();
+      }
+
+      match /templates/{templateId} {
+        function group() {
+          return get(
+            /databases/$(database)/documents/groups/$(groupId)
+          ).data;
+        }
+
+        function isActiveGroupMember() {
+          return isAuth()
+            && group().status == 'active'
+            && group().memberIds.hasAny([request.auth.uid]);
+        }
+
+        function isGroupManager() {
+          return isActiveGroupMember()
+            && group().ownerId == request.auth.uid;
+        }
+
+        allow read: if isActiveGroupMember();
+        allow create, update: if isGroupManager()
+          && request.resource.data.schemaVersion == 1
+          && request.resource.data.groupId == groupId
+          && request.resource.data.publishedBy == group().ownerId
+          && request.resource.data.status == 'active'
+          && request.resource.data.days is int
+          && request.resource.data.days >= 1
+          && request.resource.data.days <= 365
+          && request.resource.data.keys().hasOnly([
+            'schemaVersion', 'groupId', 'type', 'days', 'effort',
+            'strategy', 'status', 'publishedBy', 'updatedAt'
+          ]);
+        allow delete: if isGroupManager();
+      }
+
+      match /member_summaries/{memberId} {
+        function group() {
+          return get(
+            /databases/$(database)/documents/groups/$(groupId)
+          ).data;
+        }
+
+        function groupAfter() {
+          return getAfter(
+            /databases/$(database)/documents/groups/$(groupId)
+          ).data;
+        }
+
+        function isActiveGroupMember() {
+          return isAuth()
+            && group().status == 'active'
+            && group().memberIds.hasAny([request.auth.uid]);
+        }
+
+        function validMemberSummary() {
+          let summary = request.resource.data.summary;
+          return isAuth()
+            && request.auth.uid == memberId
+            && groupAfter().status == 'active'
+            && groupAfter().memberIds.hasAny([request.auth.uid])
+            && groupAfter().memberIds.hasAny([memberId])
+            && request.resource.data.schemaVersion == 1
+            && request.resource.data.groupId == groupId
+            && request.resource.data.memberId == memberId
+            && request.resource.data.status == 'shared'
+            && request.resource.data.displayName is string
+            && request.resource.data.displayName.size() > 0
+            && request.resource.data.displayName.size() <= 40
+            && request.resource.data.keys().hasOnly([
+              'schemaVersion', 'groupId', 'memberId', 'displayName',
+              'status', 'summary', 'updatedAt'
+            ])
+            && summary.keys().hasOnly([
+              'disciplineScore', 'completedTasks', 'totalTasks',
+              'focusMinutes', 'steps', 'sleepHours'
+            ])
+            && summary.disciplineScore is int
+            && summary.disciplineScore >= 0
+            && summary.disciplineScore <= 100
+            && summary.completedTasks is int
+            && summary.completedTasks >= 0
+            && summary.totalTasks is int
+            && summary.totalTasks >= summary.completedTasks
+            && summary.totalTasks <= 10000
+            && summary.focusMinutes is int
+            && summary.focusMinutes >= 0
+            && summary.focusMinutes <= 1440
+            && summary.steps is int
+            && summary.steps >= 0
+            && summary.steps <= 1000000
+            && summary.sleepHours is number
+            && summary.sleepHours >= 0
+            && summary.sleepHours <= 24;
+        }
+
+        // The parent membership mutation rules require this document to be
+        // absent after a member leaves. Keeping the read predicate queryable
+        // lets App and Web listen to the consented summary collection.
+        allow read: if isActiveGroupMember();
+        allow create, update: if validMemberSummary();
+        allow delete: if isAuth() && (
+          request.auth.uid == memberId
+          || (
+            group().ownerId == request.auth.uid
+            && !groupAfter().memberIds.hasAny([memberId])
+          )
+        );
+      }
+    }
+
+    // ─── /group_requests/{requestId} ──────────────────────────────────
+    match /group_requests/{requestId} {
+      allow read: if isAuth() && (
+        resource.data.senderId == request.auth.uid
+        || resource.data.receiverId == request.auth.uid
+      );
+      allow create: if isAuth()
+        && request.resource.data.senderId == request.auth.uid
+        && isAccountReferenceableAfter(request.resource.data.senderId)
+        && isAccountReferenceableAfter(request.resource.data.receiverId)
+        && request.resource.data.status == 'pending'
+        && exists(
+          /databases/$(database)/documents/groups/$(request.resource.data.groupId)
+        )
+        && get(
+          /databases/$(database)/documents/groups/$(request.resource.data.groupId)
+        ).data.ownerId == request.auth.uid
+        && get(
+          /databases/$(database)/documents/groups/$(request.resource.data.groupId)
+        ).data.name == request.resource.data.groupName
+        && request.resource.data.receiverId != request.auth.uid
+        && exists(
+          /databases/$(database)/documents/users/$(request.resource.data.receiverId)
+        )
+        && request.resource.data.keys().hasAll([
+          'senderId', 'receiverId', 'groupId', 'groupName',
+          'status', 'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'senderId', 'senderNudgeId', 'senderNickname',
+          'receiverId', 'groupId', 'groupName',
+          'status', 'createdAt'
+        ]);
+      allow update: if isAuth() && (
+        (
+          resource.data.receiverId == request.auth.uid
+          && (
+            request.resource.data.status != 'accepted'
+            || (
+              isAccountReferenceableAfter(resource.data.senderId)
+              && isAccountReferenceableAfter(resource.data.receiverId)
+            )
+          )
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'updatedAt'])
+          && request.resource.data.status in ['accepted', 'declined']
+          && (
+            request.resource.data.status == 'declined'
+            || (
+              getAfter(
+                /databases/$(database)/documents/groups/$(resource.data.groupId)
+              ).data.memberIds.hasAny([request.auth.uid])
+              && hasActiveRelationshipMembershipAfter(
+                'group',
+                resource.data.groupId,
+                request.auth.uid,
+                'member'
+              )
+            )
+          )
+        )
+        || (
+          resource.data.senderId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'updatedAt'])
+          && request.resource.data.status == 'cancelled'
+        )
+      );
       allow delete: if false;
     }
 
     // ─── /rooms/{roomId} ─────────────────────────────────────────────
-    // Study rooms: authenticated members can read rooms they belong to.
-    // The 'memberIds' array field is used for efficient array-contains queries.
+    // Room metadata is canonical. Each participant owns their member
+    // projection and activity sessions in subcollections.
     match /rooms/{roomId} {
-      // Any authenticated user can read rooms (needed for QR-code join flow)
-      allow read: if isAuth();
+      function roomDocument() {
+        return get(
+          /databases/$(database)/documents/rooms/$(roomId)
+        );
+      }
 
-      // Any authenticated user can create a room (they become owner)
+      function roomDocumentAfter() {
+        return getAfter(
+          /databases/$(database)/documents/rooms/$(roomId)
+        );
+      }
+
+      function isRoomParticipant() {
+        return isAuth()
+          && roomDocument().data.memberIds.hasAny([request.auth.uid]);
+      }
+
+      function isApprovedRoomParticipant() {
+        return isRoomParticipant()
+          && exists(
+            /databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)
+          )
+          && get(
+            /databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)
+          ).data.approvalStatus == 'approved';
+      }
+
+      function isApprovedActiveRoomParticipant() {
+        return isApprovedRoomParticipant()
+          && roomDocument().data.status == 'active';
+      }
+
+      function validRoomMetadata() {
+        return request.resource.data.schemaVersion == 2
+          && request.resource.data.id == roomId
+          && request.resource.data.ownerId is string
+          && request.resource.data.ownerName is string
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 80
+          && request.resource.data.description is string
+          && request.resource.data.description.size() <= 500
+          && request.resource.data.memberIds is list
+          && request.resource.data.visibility in ['public', 'private']
+          && request.resource.data.status in ['active', 'closed']
+          && request.resource.data.joinMode in ['instant', 'approval']
+          && request.resource.data.roomType in [
+            'study', 'sleep', 'exercise', 'steps', 'custom'
+          ]
+          && request.resource.data.goalSourceType in [
+            'focusMinutes', 'sleepHours', 'steps',
+            'exerciseMinutes', 'studyRoom', 'manual', 'system'
+          ]
+          && request.resource.data.dailyGoalValue is number
+          && request.resource.data.dailyGoalValue > 0
+          && request.resource.data.goalUnitLabel is string
+          && request.resource.data.goalUnitLabel.size() > 0
+          && request.resource.data.goalUnitLabel.size() <= 20
+          && request.resource.data.memberLimit is int
+          && request.resource.data.memberLimit >= 2
+          && request.resource.data.memberLimit <= 50
+          && request.resource.data.updatedAt is string;
+      }
+
+      function changesOnlyOwnRoomMembership() {
+        let beforeMembers = resource.data.memberIds.toSet();
+        let afterMembers = request.resource.data.memberIds.toSet();
+        let addedMembers = afterMembers.difference(beforeMembers);
+        let removedMembers = beforeMembers.difference(afterMembers);
+        return resource.data.status == 'active'
+          && request.resource.data.status == 'active'
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['memberIds', 'updatedAt'])
+          && request.resource.data.ownerId == resource.data.ownerId
+          && request.resource.data.ownerId in request.resource.data.memberIds
+          && (
+            (
+              addedMembers.hasOnly([request.auth.uid])
+              && removedMembers.size() == 0
+              && afterMembers.size() <= resource.data.memberLimit
+              && existsAfter(
+                /databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)
+              )
+            )
+            || (
+              removedMembers.hasOnly([request.auth.uid])
+              && addedMembers.size() == 0
+              && request.auth.uid != resource.data.ownerId
+              && !existsAfter(
+                /databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)
+              )
+            )
+          );
+      }
+
+      function ownerRemovesOneRoomMember() {
+        let beforeMembers = resource.data.memberIds.toSet();
+        let afterMembers = request.resource.data.memberIds.toSet();
+        let addedMembers = afterMembers.difference(beforeMembers);
+        let removedMembers = beforeMembers.difference(afterMembers);
+        return resource.data.status == 'active'
+          && request.resource.data.status == 'active'
+          && resource.data.ownerId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['memberIds', 'updatedAt'])
+          && request.resource.data.ownerId == resource.data.ownerId
+          && request.resource.data.ownerId in request.resource.data.memberIds
+          && addedMembers.size() == 0
+          && removedMembers.size() == 1;
+      }
+
+      function ownerTransfersRoom() {
+        let nextOwnerId = request.resource.data.ownerId;
+        return resource.data.status == 'active'
+          && request.resource.data.status == 'active'
+          && resource.data.ownerId == request.auth.uid
+          && nextOwnerId != resource.data.ownerId
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['ownerId', 'ownerName', 'updatedAt'])
+          && request.resource.data.memberIds == resource.data.memberIds
+          && request.resource.data.memberIds.hasAny([nextOwnerId])
+          && getAfter(
+            /databases/$(database)/documents/rooms/$(roomId)/members/$(resource.data.ownerId)
+          ).data.role == 'member'
+          && getAfter(
+            /databases/$(database)/documents/rooms/$(roomId)/members/$(nextOwnerId)
+          ).data.role == 'owner'
+          && getAfter(
+            /databases/$(database)/documents/rooms/$(roomId)/members/$(nextOwnerId)
+          ).data.approvalStatus == 'approved';
+      }
+
+      function ownerUpdatesOrClosesActiveRoom() {
+        return resource.data.status == 'active'
+          && resource.data.ownerId == request.auth.uid
+          && request.resource.data.ownerId == resource.data.ownerId
+          && request.resource.data.memberIds == resource.data.memberIds
+          && (
+            request.resource.data.status == 'active'
+            || (
+              request.resource.data.status == 'closed'
+              && resource.data.memberIds.hasOnly([request.auth.uid])
+            )
+          );
+      }
+
+      allow read: if isAuth()
+        && (
+          resource.data.memberIds.hasAny([request.auth.uid])
+          || (
+            resource.data.visibility == 'public'
+            && resource.data.status == 'active'
+          )
+        );
+
       allow create: if isAuth()
+        && validRoomMetadata()
         && request.resource.data.ownerId == request.auth.uid
-        && request.resource.data.memberIds.hasAll([request.auth.uid]);
+        && request.resource.data.memberIds.hasOnly([request.auth.uid])
+        && request.resource.data.status == 'active';
 
-      // Any authenticated member of the room can update it
-      // (members update their own presence, owner updates settings)
       allow update: if isAuth()
-        && (resource.data.memberIds.hasAll([request.auth.uid])
-            || request.resource.data.memberIds.hasAll([request.auth.uid]));
+        && validRoomMetadata()
+        && (
+          ownerUpdatesOrClosesActiveRoom()
+          || changesOnlyOwnRoomMembership()
+          || ownerRemovesOneRoomMember()
+          || ownerTransfersRoom()
+        );
 
-      allow delete: if isAuth()
-        && resource.data.ownerId == request.auth.uid;
+      // Closing preserves the canonical audit trail. Physical deletion and
+      // recursive subcollection cleanup belong to a trusted server process.
+      allow delete: if false;
+
+      match /members/{memberId} {
+        function validRoomMember() {
+          return request.resource.data.keys().hasOnly([
+              'schemaVersion', 'roomId', 'memberId', 'displayName',
+              'role', 'approvalStatus', 'presenceStatus',
+              'sessionSeconds', 'metricValue', 'metricUnit',
+              'activeSessionId', 'updatedAt'
+            ])
+            && request.resource.data.keys().hasAll([
+              'schemaVersion', 'roomId', 'memberId', 'displayName',
+              'role', 'approvalStatus', 'presenceStatus',
+              'sessionSeconds', 'metricValue', 'metricUnit',
+              'activeSessionId', 'updatedAt'
+            ])
+            && request.resource.data.schemaVersion == 1
+            && request.resource.data.roomId == roomId
+            && request.resource.data.memberId == memberId
+            && request.resource.data.displayName is string
+            && request.resource.data.displayName.size() > 0
+            && request.resource.data.displayName.size() <= 40
+            && request.resource.data.role in ['owner', 'member']
+            && request.resource.data.approvalStatus in [
+              'pending', 'approved'
+            ]
+            && request.resource.data.presenceStatus in [
+              'studying', 'resting', 'offline'
+            ]
+            && request.resource.data.sessionSeconds is int
+            && request.resource.data.sessionSeconds >= 0
+            && request.resource.data.metricValue is number
+            && request.resource.data.metricValue >= 0
+            && request.resource.data.metricUnit is string
+            && request.resource.data.metricUnit.size() > 0
+            && request.resource.data.metricUnit.size() <= 20
+            && (
+              request.resource.data.activeSessionId == null
+              || request.resource.data.activeSessionId is string
+            )
+            && request.resource.data.updatedAt is string;
+        }
+
+        function ownerChangesApproval() {
+          return roomDocument().data.ownerId == request.auth.uid
+            && memberId != roomDocument().data.ownerId
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['approvalStatus', 'updatedAt'])
+            && request.resource.data.role == resource.data.role
+            && resource.data.approvalStatus == 'pending'
+            && request.resource.data.approvalStatus == 'approved';
+        }
+
+        function ownerChangesRoleDuringTransfer() {
+          let oldOwnerId = roomDocument().data.ownerId;
+          let nextOwnerId = roomDocumentAfter().data.ownerId;
+          return oldOwnerId == request.auth.uid
+            && nextOwnerId != oldOwnerId
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['role', 'updatedAt'])
+            && (
+              (
+                memberId == oldOwnerId
+                && resource.data.role == 'owner'
+                && request.resource.data.role == 'member'
+              )
+              || (
+                memberId == nextOwnerId
+                && resource.data.role == 'member'
+                && request.resource.data.role == 'owner'
+              )
+            );
+        }
+
+        allow read: if isRoomParticipant();
+        allow create: if isAuth()
+          && roomDocumentAfter().data.status == 'active'
+          && request.auth.uid == memberId
+          && validRoomMember()
+          && roomDocumentAfter().data.memberIds.hasAny([memberId])
+          && request.resource.data.role
+            == (
+              roomDocumentAfter().data.ownerId == memberId
+                ? 'owner'
+                : 'member'
+            )
+          && request.resource.data.approvalStatus
+            == (
+              roomDocumentAfter().data.ownerId == memberId
+                || roomDocumentAfter().data.joinMode == 'instant'
+                ? 'approved'
+                : 'pending'
+            )
+          && request.resource.data.activeSessionId == null;
+        allow update: if isAuth()
+          && roomDocument().data.status == 'active'
+          && roomDocumentAfter().data.status == 'active'
+          && validRoomMember()
+          && (
+            (
+              request.auth.uid == memberId
+              && request.resource.data.role == resource.data.role
+              && request.resource.data.approvalStatus
+                == resource.data.approvalStatus
+              && request.resource.data.activeSessionId
+                == resource.data.activeSessionId
+            )
+            || ownerChangesApproval()
+            || ownerChangesRoleDuringTransfer()
+          );
+        allow delete: if isAuth()
+          && roomDocument().data.status == 'active'
+          && roomDocumentAfter().data.status == 'active'
+          && !roomDocumentAfter().data.memberIds.hasAny([memberId])
+          && (
+            request.auth.uid == memberId
+            || roomDocument().data.ownerId == request.auth.uid
+          );
+      }
+
+      match /activity_sessions/{sessionId} {
+        // This is the Cloud-only transactional room aggregate. App and Web
+        // display the actor-owned top-level Activity Ledger session instead,
+        // so clients cannot accidentally depend on a second session truth.
+        allow read, write: if false;
+      }
+
+      match /messages/{messageId} {
+        function validRoomMessage() {
+          return request.resource.data.keys().hasOnly([
+              'id', 'roomId', 'senderId', 'senderName',
+              'text', 'type', 'createdAt'
+            ])
+            && request.resource.data.keys().hasAll([
+              'id', 'roomId', 'senderId', 'senderName',
+              'text', 'type', 'createdAt'
+            ])
+            && request.resource.data.id == messageId
+            && request.resource.data.roomId == roomId
+            && request.resource.data.senderId == request.auth.uid
+            && request.resource.data.senderName == get(
+              /databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)
+            ).data.displayName
+            && request.resource.data.senderName is string
+            && request.resource.data.senderName.size() > 0
+            && request.resource.data.senderName.size() <= 40
+            && request.resource.data.text is string
+            && request.resource.data.text.size() > 0
+            && request.resource.data.text.size() <= 500
+            && request.resource.data.type in ['text', 'sticker']
+            && request.resource.data.createdAt is string
+            && request.resource.data.createdAt.size() <= 40;
+        }
+
+        allow read: if isApprovedRoomParticipant();
+        allow create: if isApprovedActiveRoomParticipant()
+          && validRoomMessage();
+        allow update, delete: if false;
+      }
+
+      match /events/{eventId} {
+        function validRoomEvent() {
+          return request.resource.data.keys().hasOnly([
+              'id', 'roomId', 'actorId', 'actorName',
+              'text', 'type', 'createdAt'
+            ])
+            && request.resource.data.keys().hasAll([
+              'id', 'roomId', 'actorId', 'actorName',
+              'text', 'type', 'createdAt'
+            ])
+            && request.resource.data.id == eventId
+            && request.resource.data.roomId == roomId
+            && request.resource.data.actorId == request.auth.uid
+            && request.resource.data.actorName == get(
+              /databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid)
+            ).data.displayName
+            && request.resource.data.actorName is string
+            && request.resource.data.actorName.size() > 0
+            && request.resource.data.actorName.size() <= 40
+            && request.resource.data.text is string
+            && request.resource.data.text.size() > 0
+            && request.resource.data.text.size() <= 500
+            && request.resource.data.type in [
+              'join', 'start', 'pause', 'complete', 'cancel', 'leave',
+              'message', 'sticker', 'system'
+            ]
+            && (
+              request.resource.data.type != 'system'
+              || roomDocument().data.ownerId == request.auth.uid
+            )
+            && request.resource.data.createdAt is string
+            && request.resource.data.createdAt.size() <= 40;
+        }
+
+        allow read: if isApprovedRoomParticipant();
+        allow create: if isApprovedActiveRoomParticipant()
+          && validRoomEvent();
+        allow update, delete: if false;
+      }
 
       // ─── /rooms/{roomId}/calls/{callUserId} ───────────────────────
       match /calls/{callUserId} {
-        allow read: if isAuth();
-        allow write: if isOwner(callUserId);
-        allow delete: if isOwner(callUserId);
+        allow read: if isRoomParticipant();
+        allow write: if isRoomParticipant()
+          && roomDocument().data.status == 'active'
+          && isOwner(callUserId);
+        allow delete: if isRoomParticipant()
+          && roomDocument().data.status == 'active'
+          && isOwner(callUserId);
 
         // ─── sdpExchange ────────────────────────────────────────────
         match /sdpExchange/{senderId} {
-          allow read: if isAuth() && (
+          allow read: if isRoomParticipant() && (
             request.auth.uid == callUserId || request.auth.uid == senderId
           );
-          allow write: if isAuth() && request.auth.uid == senderId;
-          allow delete: if isAuth() && request.auth.uid == senderId;
+          allow write: if isRoomParticipant()
+            && roomDocument().data.status == 'active'
+            && request.auth.uid == senderId;
+          allow delete: if isRoomParticipant()
+            && roomDocument().data.status == 'active'
+            && request.auth.uid == senderId;
         }
 
         // ─── ICE candidates ─────────────────────────────────────────
         match /candidates/{candidateId} {
-          allow read: if isAuth() && request.auth.uid == callUserId;
-          allow create: if isAuth()
+          allow read: if isRoomParticipant()
+            && request.auth.uid == callUserId;
+          allow create: if isRoomParticipant()
+            && roomDocument().data.status == 'active'
             && request.resource.data.senderId == request.auth.uid;
-          allow delete: if isAuth()
+          allow delete: if isRoomParticipant()
+            && roomDocument().data.status == 'active'
             && resource.data.senderId == request.auth.uid;
         }
       }
     }
 
+    // ─── Formal relationship memberships ─────────────────────────────
+    // One document per user and family/group scope. Parent documents keep
+    // query-friendly participant/member projections during migration, while
+    // this collection records the scoped role and membership lifecycle.
+    match /relationship_memberships/{membershipId} {
+      function familyAfter() {
+        return getAfter(
+          /databases/$(database)/documents/family_links/$(request.resource.data.scopeId)
+        ).data;
+      }
+
+      function groupBefore() {
+        return get(
+          /databases/$(database)/documents/groups/$(request.resource.data.scopeId)
+        ).data;
+      }
+
+      function groupAfter() {
+        return getAfter(
+          /databases/$(database)/documents/groups/$(request.resource.data.scopeId)
+        ).data;
+      }
+
+      function hasValidShape() {
+        let data = request.resource.data;
+        return data.schemaVersion == 1
+          && data.membershipId == membershipId
+          && membershipId
+            == data.scopeType + '--' + data.scopeId + '--' + data.userId
+          && data.scopeType in ['family', 'group']
+          && data.scopeId is string
+          && data.scopeId.size() > 0
+          && data.scopeName is string
+          && data.scopeName.size() > 0
+          && data.scopeName.size() <= 120
+          && data.userId is string
+          && data.userId.size() > 0
+          && data.role in ['guardian', 'child', 'manager', 'member']
+          && data.status in ['active', 'ended']
+          && data.createdAt is string
+          && data.updatedAt is string
+          && data.keys().hasAll([
+            'schemaVersion', 'membershipId', 'scopeType', 'scopeId',
+            'scopeName', 'userId', 'role', 'status', 'createdAt',
+            'updatedAt'
+          ])
+          && data.keys().hasOnly([
+            'schemaVersion', 'membershipId', 'scopeType', 'scopeId',
+            'scopeName', 'userId', 'role', 'status', 'createdAt',
+            'updatedAt', 'activeFrom', 'activeUntil', 'endedBy'
+          ])
+          && (
+            (
+              data.status == 'active'
+              && data.activeFrom is string
+            )
+            || (
+              data.status == 'ended'
+              && data.activeUntil is string
+              && data.endedBy is string
+            )
+          );
+      }
+
+      function familyStateMatches() {
+        let data = request.resource.data;
+        return existsAfter(
+            /databases/$(database)/documents/family_links/$(data.scopeId)
+          )
+          && familyAfter().participantIds.hasAny([data.userId])
+          && (
+            (
+              data.role == 'guardian'
+              && familyAfter().guardianId == data.userId
+            )
+            || (
+              data.role == 'child'
+              && familyAfter().childId == data.userId
+            )
+          )
+          && (
+            (
+              data.status == 'active'
+              && familyAfter().status == 'active'
+            )
+            || (
+              data.status == 'ended'
+              && familyAfter().status == 'ended'
+            )
+          );
+      }
+
+      function groupStateMatches() {
+        let data = request.resource.data;
+        let groupExists = existsAfter(
+          /databases/$(database)/documents/groups/$(data.scopeId)
+        );
+        return (
+            data.status == 'active'
+            && groupExists
+            && groupAfter().status == 'active'
+            && groupAfter().memberIds.hasAny([data.userId])
+            && (
+              (
+                data.role == 'manager'
+                && groupAfter().ownerId == data.userId
+              )
+              || (
+                data.role == 'member'
+                && groupAfter().ownerId != data.userId
+              )
+            )
+          )
+          || (
+            data.status == 'ended'
+            && (
+              !groupExists
+              || !groupAfter().memberIds.hasAny([data.userId])
+            )
+          );
+      }
+
+      function requesterCanWriteFamily() {
+        let data = request.resource.data;
+        return existsAfter(
+            /databases/$(database)/documents/family_links/$(data.scopeId)
+          )
+          && familyAfter().participantIds.hasAny([request.auth.uid]);
+      }
+
+      function requesterCanWriteGroup() {
+        let data = request.resource.data;
+        return request.auth.uid == data.userId
+          || (
+            exists(
+              /databases/$(database)/documents/groups/$(data.scopeId)
+            )
+            && groupBefore().ownerId == request.auth.uid
+          )
+          || (
+            existsAfter(
+              /databases/$(database)/documents/groups/$(data.scopeId)
+            )
+            && groupAfter().ownerId == request.auth.uid
+          );
+      }
+
+      function immutableIdentity() {
+        return request.resource.data.membershipId == resource.data.membershipId
+          && request.resource.data.scopeType == resource.data.scopeType
+          && request.resource.data.scopeId == resource.data.scopeId
+          && request.resource.data.userId == resource.data.userId;
+      }
+
+      allow read: if isAuth() && (
+        resource.data.userId == request.auth.uid
+        || (
+          resource.data.scopeType == 'family'
+          && exists(
+            /databases/$(database)/documents/family_links/$(resource.data.scopeId)
+          )
+          && get(
+            /databases/$(database)/documents/family_links/$(resource.data.scopeId)
+          ).data.participantIds.hasAny([request.auth.uid])
+        )
+        || (
+          resource.data.scopeType == 'group'
+          && exists(
+            /databases/$(database)/documents/groups/$(resource.data.scopeId)
+          )
+          && get(
+            /databases/$(database)/documents/groups/$(resource.data.scopeId)
+          ).data.ownerId == request.auth.uid
+        )
+        || isStaff()
+      );
+
+      allow create: if isAuth()
+        && hasValidShape()
+        && (
+          request.resource.data.status != 'active'
+          || isAccountReferenceableAfter(request.resource.data.userId)
+        )
+        && (
+          (
+            request.resource.data.scopeType == 'family'
+            && requesterCanWriteFamily()
+            && familyStateMatches()
+          )
+          || (
+            request.resource.data.scopeType == 'group'
+            && requesterCanWriteGroup()
+            && groupStateMatches()
+          )
+        );
+
+      allow update: if isAuth()
+        && immutableIdentity()
+        && hasValidShape()
+        && (
+          request.resource.data.status != 'active'
+          || isAccountReferenceableAfter(request.resource.data.userId)
+        )
+        && (
+          (
+            request.resource.data.scopeType == 'family'
+            && requesterCanWriteFamily()
+            && familyStateMatches()
+          )
+          || (
+            request.resource.data.scopeType == 'group'
+            && requesterCanWriteGroup()
+            && groupStateMatches()
+          )
+        );
+      allow delete: if false;
+    }
+
+    // ─── Privacy consent and immutable audit events ────────────────────
+    // Current consent and its audit trail are Cloud-written. A user may
+    // inspect only their own record; staff may inspect records for operations.
+    match /privacy_consents/{userId} {
+      allow read: if isOwner(userId) || isStaff();
+      allow write: if false;
+    }
+
+    // Data-rights requests are Cloud-created and status transitions are
+    // Cloud-audited. Account owners can track their own case; staff can work
+    // the operations queue without exposing another account's request.
+    match /privacy_data_requests/{requestId} {
+      allow read: if isAuth()
+        && (
+          resource.data.userId == request.auth.uid
+          || isStaff()
+        );
+      allow write: if false;
+    }
+
+    // Download tokens are server-only secrets. The owner obtains a short-lived
+    // action result from getPrivacyExportDownload instead of reading this doc.
+    match /privacy_export_access/{requestId} {
+      allow read, write: if false;
+    }
+
+    // Server-owned deletion fences make every helper derived from isAuth()
+    // fail closed before the account is disabled and physically removed.
+    match /account_deletion_fences/{userId} {
+      allow read, write: if false;
+    }
+
+    match /account_deletion_executions/{executionId} {
+      allow read, write: if false;
+    }
+
+    match /account_operation_leases/{userId} {
+      allow read, write: if false;
+    }
+
+    match /push_delivery_leases/{userId} {
+      allow read, write: if false;
+    }
+
+    // Reminder preferences are account-scoped and Cloud-written so App and
+    // Web cannot silently diverge or bypass the immutable audit event.
+    match /notification_preferences/{userId} {
+      allow read: if isOwner(userId) || isStaff();
+      allow write: if false;
+    }
+
+    match /user_notifications/{notificationId} {
+      allow read: if isAuth()
+        && (
+          resource.data.recipientUserId == request.auth.uid
+          || isStaff()
+        );
+      allow write: if false;
+    }
+
+    // FCM registration tokens never cross the client read boundary. Clients
+    // use updatePushInstallation; only the non-secret aggregate is visible.
+    match /push_installations/{installationId} {
+      allow read, write: if false;
+    }
+
+    match /push_token_claims/{claimId} {
+      allow read, write: if false;
+    }
+
+    // Migration rollback evidence and release acceptance records are
+    // server-only operational state. User exports are produced by Cloud.
+    match /relationship_migration_before_images/{beforeImageId} {
+      allow read, write: if false;
+    }
+
+    match /relationship_before_image_privacy_deletions/{evidenceId} {
+      allow read, write: if false;
+    }
+
+    match /production_acceptance_evidence/{evidenceId} {
+      allow read, write: if false;
+    }
+
+    match /migration_runs/{migrationRunId} {
+      allow read, write: if false;
+    }
+
+    match /push_delivery_state/{userId} {
+      allow read: if isOwner(userId) || isStaff();
+      allow write: if false;
+    }
+
+    match /push_delivery_jobs/{jobId} {
+      allow read: if isAuth()
+        && (
+          resource.data.recipientUserId == request.auth.uid
+          || isStaff()
+        );
+      allow write: if false;
+    }
+
+    match /audit_events/{auditEventId} {
+      allow read: if isAuth()
+        && (
+          resource.data.actorUserId == request.auth.uid
+          || isStaff()
+        );
+      allow write: if false;
+    }
+
+    // ─── Cloud-built relationship outcomes ────────────────────────────
+    // Family trees, group planets and shared memories are derived by the
+    // callable from validated relationship events. Clients cannot mint them.
+    match /relationship_outcomes/{outcomeId} {
+      function canReadOutcome() {
+        return isAuth()
+          && hasRelationshipMembership(
+            resource.data.scopeType,
+            resource.data.scopeId,
+            request.auth.uid
+          );
+      }
+
+      allow read: if canReadOutcome();
+      allow write: if false;
+
+      match /memories/{memoryId} {
+        function parentOutcome() {
+          return get(
+            /databases/$(database)/documents/relationship_outcomes/$(outcomeId)
+          ).data;
+        }
+
+        allow read: if isAuth()
+          && hasRelationshipMembership(
+            parentOutcome().scopeType,
+            parentOutcome().scopeId,
+            request.auth.uid
+          );
+        allow write: if false;
+      }
+    }
+
+    // ─── Cloud Activity Ledger ─────────────────────────────────────────
+    // Activity Ledger writes are Cloud-only. Clients can read only their own
+    // evidence, sessions and receipts; room aggregates require membership.
+    match /activity_events/{eventId} {
+      allow read: if isAuth()
+        && (resource.data.actorUserId == request.auth.uid || isStaff());
+      allow write: if false;
+    }
+
+    match /activity_sessions/{sessionId} {
+      allow read: if isAuth()
+        && (resource.data.actorUserId == request.auth.uid || isStaff());
+      allow write: if false;
+    }
+
+    match /discipline_identity_snapshots/{userId} {
+      allow read: if isOwner(userId) || isStaff();
+      allow write: if false;
+    }
+
+    // Device assignments are provisioned and revoked by audited Cloud
+    // operations. The assigned account may resolve only its own device before
+    // accepting BLE evidence; clients can never claim or transfer a device.
+    match /device_assignments/{deviceId} {
+      allow read: if isAuth()
+        && (
+          resource.data.assignedUserId == request.auth.uid
+          || isStaff()
+        );
+      allow write: if false;
+    }
+
+    // A privacy-safe lock survives account deletion so an unwiped device can
+    // never be reassigned while it may still hold the prior actor's events.
+    match /device_transfer_locks/{deviceId} {
+      allow read: if isStaff();
+      allow write: if false;
+    }
+
+    match /activity_receipts/{receiptId} {
+      allow read: if isAuth()
+        && (resource.data.actorUserId == request.auth.uid || isStaff());
+      allow write: if false;
+    }
+
+    match /room_resonance_preferences/{preferenceId} {
+      allow read: if isAuth()
+        && (resource.data.userId == request.auth.uid || isStaff());
+      allow write: if false;
+    }
+
+    match /room_resonance_signals/{signalId} {
+      allow read: if isApprovedRoomMember(resource.data.roomId);
+      allow write: if false;
+    }
+
+    match /room_resonance_acknowledgements/{acknowledgementId} {
+      allow read: if isApprovedRoomMember(resource.data.roomId);
+      allow write: if false;
+    }
+
+    match /reward_ledger_entries/{rewardEntryId} {
+      allow read: if isAuth()
+        && (resource.data.actorUserId == request.auth.uid || isStaff());
+      allow write: if false;
+    }
+
+    match /room_contributions/{contributionId} {
+      allow read: if isAuth()
+        && (
+          resource.data.actorUserId == request.auth.uid
+          || isApprovedRoomMember(resource.data.roomId)
+          || isStaff()
+        );
+      allow write: if false;
+    }
+
+    match /activity_source_records/{claimId} {
+      allow read, write: if false;
+    }
+
+    match /activity_settlements/{claimId} {
+      allow read, write: if false;
+    }
+
     // ─── /shop_items/{itemId} ──────────────────────────────────────────
     match /shop_items/{itemId} {
       allow read: if isAuth();
-      allow create, update, delete: if isStaff();
+      // Catalog mutations must pass through manageCatalogItem so validation,
+      // index allocation and the immutable audit event are transactional.
+      allow create, update, delete: if false;
+    }
+
+    match /catalog_counters/{counterId} {
+      allow read: if isStaff();
+      allow write: if false;
     }
   }
 }

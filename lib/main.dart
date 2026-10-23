@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
 import 'state/app_state.dart';
 import 'services/notification_service.dart';
+import 'services/firebase_app_check_service.dart';
 import 'screens/home_page.dart';
 import 'screens/focus_page.dart';
 import 'screens/health_page.dart';
@@ -10,6 +12,8 @@ import 'screens/statistics_page.dart';
 import 'screens/social_page.dart';
 import 'screens/character_page.dart';
 import 'screens/account_page.dart';
+import 'screens/group_management_page.dart';
+import 'screens/guardian_center_page.dart';
 import 'theme/app_ui.dart';
 import 'screens/onboarding_page.dart';
 
@@ -17,11 +21,16 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await NotificationService.initialize();
   try {
-    await Firebase.initializeApp();
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    await FirebaseAppCheckService.activate();
     debugPrint('Firebase initialized successfully');
   } catch (e) {
     debugPrint('Firebase initialization failed: $e');
-    debugPrint('Please ensure google-services.json and GoogleService-Info.plist are correctly configured.');
+    debugPrint(
+      'Please ensure google-services.json and GoogleService-Info.plist are correctly configured.',
+    );
   }
   runApp(const NudgeApp());
 }
@@ -265,8 +274,8 @@ class _AppRoot extends StatelessWidget {
       home: !appState.isHydrated
           ? const _AppLoadingScreen()
           : (appState.hasCompletedOnboarding
-              ? const MainShell()
-              : const OnboardingPage()),
+                ? const MainShell()
+                : const OnboardingPage()),
     );
   }
 }
@@ -304,6 +313,7 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int currentIndex = 0;
+  String? _scheduledPushRoute;
 
   void changeTab(int index) {
     setState(() {
@@ -318,9 +328,38 @@ class _MainShellState extends State<MainShell> {
     );
   }
 
+  void _schedulePushRoute(AppState appState) {
+    final route = appState.pendingPushNotificationRoute;
+    if (route == null || route == _scheduledPushRoute) return;
+    _scheduledPushRoute = route;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final pendingRoute = appState.takePendingPushNotificationRoute();
+      _scheduledPushRoute = null;
+      if (pendingRoute == null) return;
+      switch (pendingRoute) {
+        case 'guardian':
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const GuardianCenterPage()),
+          );
+          break;
+        case 'groups':
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const GroupManagementPage()),
+          );
+          break;
+        default:
+          changeTab(3);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
+    _schedulePushRoute(appState);
     final accentColor = appState.currentIconColor;
 
     final pages = [

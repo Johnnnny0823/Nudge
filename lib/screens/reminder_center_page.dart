@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/user_notification.dart';
 import '../state/app_state.dart';
 import '../theme/app_ui.dart';
 
@@ -88,8 +89,21 @@ class ReminderCenterPage extends StatelessWidget {
                       Switch(
                         value: setting.enabled,
                         activeThumbColor: color,
-                        onChanged: (value) =>
-                            appState.setReminderEnabled(setting.key, value),
+                        onChanged: appState.isSyncingNotificationPreferences
+                            ? null
+                            : (value) async {
+                                try {
+                                  await appState.setReminderEnabled(
+                                    setting.key,
+                                    value,
+                                  );
+                                } catch (error) {
+                                  if (!context.mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('通知設定同步失敗：$error')),
+                                  );
+                                }
+                              },
                       ),
                     ],
                   ),
@@ -128,8 +142,17 @@ class ReminderCenterPage extends StatelessWidget {
                       ),
                       PopupMenuButton<String>(
                         initialValue: setting.timeLabel,
-                        onSelected: (time) =>
-                            appState.setReminderTime(setting.key, time),
+                        enabled: !appState.isSyncingNotificationPreferences,
+                        onSelected: (time) async {
+                          try {
+                            await appState.setReminderTime(setting.key, time);
+                          } catch (error) {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('通知設定同步失敗：$error')),
+                            );
+                          }
+                        },
                         itemBuilder: (_) {
                           return _timeOptions
                               .map(
@@ -187,14 +210,22 @@ class ReminderCenterPage extends StatelessWidget {
   }
 
   Future<void> _enableSystemNotifications(BuildContext context) async {
-    final granted = await context
-        .read<AppState>()
-        .requestNotificationPermissionAndSchedule();
+    final appState = context.read<AppState>();
+    final granted = await appState.requestNotificationPermissionAndSchedule();
     if (!context.mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(granted ? '已啟用系統提醒並完成排程' : '尚未取得系統通知權限')),
-    );
+    final message = !granted
+        ? '尚未取得系統通知權限'
+        : appState.isSignedIn &&
+              appState.isDevicePushSupported &&
+              !appState.isCurrentDevicePushConfigured
+        ? '本機提醒已啟用；遠端推播尚未取得裝置 token，請稍後再試'
+        : appState.isCurrentDevicePushConfigured
+        ? '已啟用本機排程與帳號遠端推播'
+        : '已啟用此裝置的本機提醒排程';
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Widget _buildPreviewCard(BuildContext context, ReminderPreview preview) {
@@ -236,6 +267,106 @@ class ReminderCenterPage extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  String _formatNotificationTime(DateTime? value) {
+    if (value == null) return '時間未提供';
+    final local = value.toLocal();
+    final month = local.month.toString().padLeft(2, '0');
+    final day = local.day.toString().padLeft(2, '0');
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '$month/$day $hour:$minute';
+  }
+
+  Widget _buildUserNotificationCard(
+    BuildContext context,
+    UserNotification notification,
+  ) {
+    final appState = context.read<AppState>();
+    final unread = notification.isUnread == true;
+    return Card(
+      shape: AppUI.cardShape(),
+      child: Padding(
+        padding: const EdgeInsets.all(AppUI.innerPadding),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: AppUI.softCardOf(
+                context,
+                unread ? AppUI.blue : AppUI.green,
+              ),
+              child: Icon(
+                notification.kind.toString().contains('family')
+                    ? Icons.family_restroom_outlined
+                    : Icons.groups_2_outlined,
+                color: unread ? AppUI.blue : AppUI.green,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          notification.title,
+                          style: AppUI.cardTitleOf(context),
+                        ),
+                      ),
+                      Text(
+                        _formatNotificationTime(notification.createdAt),
+                        style: TextStyle(
+                          color: AppUI.textSecondaryOf(context),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 5),
+                  Text(notification.body, style: AppUI.bodyOf(context)),
+                  const SizedBox(height: 10),
+                  if (unread)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: () async {
+                          try {
+                            await appState.markUserNotificationRead(
+                              notification.id,
+                            );
+                          } catch (error) {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('更新站內通知失敗：$error')),
+                            );
+                          }
+                        },
+                        icon: const Icon(Icons.done_all_rounded, size: 18),
+                        label: const Text('標示已讀'),
+                      ),
+                    )
+                  else
+                    Text(
+                      notification.isResolved ? '邀請已處理' : '已讀',
+                      style: TextStyle(
+                        color: AppUI.textSecondaryOf(context),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -296,17 +427,119 @@ class ReminderCenterPage extends StatelessWidget {
                         style: TextStyle(color: Colors.white70, height: 1.45),
                       ),
                       const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _statusChip(
+                            context,
+                            appState.isNotificationPreferenceCloudVerified
+                                ? 'App／Web 已同步'
+                                : appState.isSignedIn
+                                ? '等待 Cloud 同步'
+                                : '訪客：僅此裝置',
+                            appState.isNotificationPreferenceCloudVerified
+                                ? Icons.cloud_done_outlined
+                                : Icons.cloud_sync_outlined,
+                          ),
+                          _statusChip(
+                            context,
+                            appState.isCurrentDevicePushConfigured
+                                ? '此裝置推播已設定'
+                                : appState.isPushNotificationConfigured
+                                ? '帳號其他裝置已設定推播'
+                                : '目前為本機排程／站內通知',
+                            appState.isPushNotificationConfigured
+                                ? Icons.mobile_friendly_outlined
+                                : Icons.phonelink_erase_outlined,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
                       FilledButton.icon(
                         onPressed: () => _enableSystemNotifications(context),
                         icon: const Icon(Icons.notifications_active_outlined),
                         label: const Text('啟用系統提醒'),
                       ),
+                      if (appState.isSignedIn &&
+                          appState.isDevicePushSupported &&
+                          appState.isCurrentDevicePushConfigured) ...[
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: () async {
+                            try {
+                              await appState.disablePushNotifications();
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('已關閉此裝置的遠端推播；本機提醒排程不受影響'),
+                                ),
+                              );
+                            } catch (error) {
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('無法關閉遠端推播：$error')),
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.notifications_off_outlined),
+                          label: const Text('關閉此裝置遠端推播'),
+                        ),
+                      ],
                     ],
                   ),
                 ),
               ],
             ),
           ),
+          const SizedBox(height: AppUI.sectionGap),
+          Row(
+            children: [
+              Expanded(
+                child: Text('站內通知', style: AppUI.sectionTitleOf(context)),
+              ),
+              Text(
+                '${appState.unreadUserNotificationCount} 則未讀',
+                style: TextStyle(
+                  color: AppUI.textSecondaryOf(context),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (!appState.isSignedIn)
+            Card(
+              shape: AppUI.cardShape(),
+              child: Padding(
+                padding: const EdgeInsets.all(AppUI.innerPadding),
+                child: Text(
+                  '登入後可接收家庭與團體邀請的 Cloud 站內通知。',
+                  style: AppUI.bodyOf(context),
+                ),
+              ),
+            )
+          else if (appState.userNotifications.isEmpty)
+            Card(
+              shape: AppUI.cardShape(),
+              child: Padding(
+                padding: const EdgeInsets.all(AppUI.innerPadding),
+                child: Text(
+                  '目前沒有站內通知。新的家庭／團體邀請與處理結果會由 Cloud 顯示在這裡。',
+                  style: AppUI.bodyOf(context),
+                ),
+              ),
+            )
+          else
+            ...appState.userNotifications
+                .take(20)
+                .map(
+                  (notification) => Padding(
+                    padding: const EdgeInsets.only(bottom: AppUI.cardGap),
+                    child: _buildUserNotificationCard(context, notification),
+                  ),
+                ),
           const SizedBox(height: AppUI.sectionGap),
           Text('即將提醒', style: AppUI.sectionTitleOf(context)),
           const SizedBox(height: 12),
@@ -335,6 +568,31 @@ class ReminderCenterPage extends StatelessWidget {
             (setting) => Padding(
               padding: const EdgeInsets.only(bottom: AppUI.cardGap),
               child: _buildReminderChannel(context, setting),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusChip(BuildContext context, String label, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(AppUI.radiusPill),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: Colors.white),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
             ),
           ),
         ],

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
@@ -12,16 +13,49 @@ import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 
 import '../models/avatar_catalog.dart';
 import '../models/avatar_profile.dart';
+import '../models/activity_ledger.dart';
 import '../models/badge_record.dart';
 import '../models/daily_summary.dart';
+import '../models/discipline_identity_snapshot.dart';
+import '../models/experience_capabilities.dart';
+import '../models/family_link_contract.dart';
 import '../models/friend_request.dart';
+import '../models/group_contract.dart';
+import '../models/health_activity_snapshot.dart';
+import '../models/notification_preferences.dart';
+import '../models/privacy_consent.dart';
+import '../models/relationship_membership.dart';
+import '../models/relationship_outcome.dart';
+import '../models/room_activity_session.dart';
+import '../models/room_resonance.dart';
 import '../models/social_encouragement_record.dart';
 import '../models/social_friend_profile.dart';
 import '../models/study_room_models.dart';
 import '../models/task_model.dart';
+import '../models/user_notification.dart';
 import '../models/user_model.dart';
 import '../services/local_storage_service.dart';
 import '../services/notification_service.dart';
+import '../services/activity_ingestion.dart';
+import '../services/activity_ledger_outbox.dart';
+import '../services/device_activity_correlation.dart';
+import '../services/cloud_activity_ledger_gateway.dart';
+import '../services/cloud_discipline_identity_gateway.dart';
+import '../services/cloud_health_snapshot_gateway.dart';
+import '../services/cloud_notification_preference_gateway.dart';
+import '../services/cloud_privacy_consent_gateway.dart';
+import '../services/cloud_relationship_outcome_gateway.dart';
+import '../services/cloud_room_resonance_gateway.dart';
+import '../services/cloud_reward_avatar_gateway.dart';
+import '../services/cloud_reward_purchase_gateway.dart';
+import '../services/cloud_user_notification_gateway.dart';
+import '../services/health_snapshot_outbox.dart';
+import '../services/android_nudge_ble_transport.dart';
+import '../services/firestore_device_assignment_repository.dart';
+import '../services/nudge_device_runtime.dart';
+import '../services/push_notification_service.dart';
+import '../services/room_activity_session_ledger_gateway.dart';
+import '../services/task_activity_ledger.dart';
 import '../theme/app_ui.dart';
 
 class ReminderChannelSetting {
@@ -79,11 +113,72 @@ class ReminderPreview {
 }
 
 class AppState extends ChangeNotifier {
-  AppState() {
+  final ActivityLedgerOutbox _activityLedgerOutbox;
+  final HealthSnapshotOutbox _healthSnapshotOutbox;
+  final CloudRelationshipOutcomeGateway _relationshipOutcomeGateway;
+  final CloudDisciplineIdentityGateway _disciplineIdentityGateway;
+  final CloudRoomResonanceGateway _roomResonanceGateway;
+  final CloudPrivacyConsentGateway _privacyConsentGateway;
+  final CloudNotificationPreferenceGateway _notificationPreferenceGateway;
+  final CloudUserNotificationGateway _userNotificationGateway;
+  final CloudRewardAvatarGateway _rewardAvatarGateway;
+  final CloudRewardPurchaseGateway _rewardPurchaseGateway;
+  final PushNotificationService _pushNotificationService;
+  final RoomActivitySessionLedgerGateway _roomActivitySessionLedgerGateway;
+
+  AppState({
+    ActivityLedgerOutbox? activityLedgerOutbox,
+    HealthSnapshotOutbox? healthSnapshotOutbox,
+    CloudRelationshipOutcomeGateway? relationshipOutcomeGateway,
+    CloudDisciplineIdentityGateway? disciplineIdentityGateway,
+    CloudRoomResonanceGateway? roomResonanceGateway,
+    CloudPrivacyConsentGateway? privacyConsentGateway,
+    CloudNotificationPreferenceGateway? notificationPreferenceGateway,
+    CloudUserNotificationGateway? userNotificationGateway,
+    CloudRewardAvatarGateway? rewardAvatarGateway,
+    CloudRewardPurchaseGateway? rewardPurchaseGateway,
+    PushNotificationService? pushNotificationService,
+    RoomActivitySessionLedgerGateway? roomActivitySessionLedgerGateway,
+  }) : _activityLedgerOutbox =
+           activityLedgerOutbox ??
+           ActivityLedgerOutbox(
+             gateway: CloudActivityLedgerGateway.firebase(),
+             getActorId: () => fb_auth.FirebaseAuth.instance.currentUser?.uid,
+           ),
+       _healthSnapshotOutbox =
+           healthSnapshotOutbox ??
+           HealthSnapshotOutbox(gateway: CloudHealthSnapshotGateway.firebase()),
+       _relationshipOutcomeGateway =
+           relationshipOutcomeGateway ??
+           CloudRelationshipOutcomeGateway.firebase(),
+       _disciplineIdentityGateway =
+           disciplineIdentityGateway ??
+           CloudDisciplineIdentityGateway.firebase(),
+       _roomResonanceGateway =
+           roomResonanceGateway ?? CloudRoomResonanceGateway.firebase(),
+       _privacyConsentGateway =
+           privacyConsentGateway ?? CloudPrivacyConsentGateway.firebase(),
+       _notificationPreferenceGateway =
+           notificationPreferenceGateway ??
+           CloudNotificationPreferenceGateway.firebase(),
+       _userNotificationGateway =
+           userNotificationGateway ?? CloudUserNotificationGateway.firebase(),
+       _rewardAvatarGateway =
+           rewardAvatarGateway ?? CloudRewardAvatarGateway.firebase(),
+       _rewardPurchaseGateway =
+           rewardPurchaseGateway ?? CloudRewardPurchaseGateway.firebase(),
+       _pushNotificationService =
+           pushNotificationService ?? PushNotificationService(),
+       _roomActivitySessionLedgerGateway =
+           roomActivitySessionLedgerGateway ??
+           CloudRoomActivitySessionLedgerGateway() {
+    _pushNotificationService.setRouteHandler(_handlePushNotificationRoute);
     _listenToAuthChanges();
   }
 
   bool _isGuestMode = false;
+  bool? _pushInstallationConfigured;
+  String? _pendingPushNotificationRoute;
   bool get isGuestMode => _isGuestMode;
 
   void skipSignIn() {
@@ -96,15 +191,96 @@ class AppState extends ChangeNotifier {
   StreamSubscription? _incomingRequestsSubscription;
   StreamSubscription? _outgoingRequestsSubscription;
   StreamSubscription? _roomsSubscription;
+  StreamSubscription? _roomDiscoverySubscription;
+  StreamSubscription? _activitySessionsSubscription;
+  final Map<String, StreamSubscription> _roomMemberSubscriptions = {};
+  final Map<String, StreamSubscription> _roomMessageSubscriptions = {};
+  final Map<String, StreamSubscription> _roomEventSubscriptions = {};
+  final Map<String, StreamSubscription> _roomResonancePreferenceSubscriptions =
+      {};
+  final Map<String, StreamSubscription> _roomResonanceSignalSubscriptions = {};
   StreamSubscription? _shopSubscription;
   StreamSubscription? _incomingGuardianRequestsSubscription;
   StreamSubscription? _outgoingGuardianRequestsSubscription;
-  StreamSubscription? _groupOwnerSubscription;
+  StreamSubscription? _familyLinkSubscription;
+  StreamSubscription? _relationshipMembershipSubscription;
+  StreamSubscription? _familyEncouragementSubscription;
+  StreamSubscription? _familyGoalSubscription;
+  StreamSubscription? _familyBondEventSubscription;
+  StreamSubscription? _familySummarySubscription;
+  StreamSubscription? _familyOutcomeSubscription;
+  StreamSubscription? _familyMemoriesSubscription;
+  StreamSubscription? _incomingGroupRequestsSubscription;
+  StreamSubscription? _groupSubscription;
+  StreamSubscription? _groupChallengeSubscription;
+  StreamSubscription? _groupChallengeParticipantsSubscription;
+  StreamSubscription? _groupSchedulesSubscription;
+  StreamSubscription? _groupTemplateSubscription;
+  StreamSubscription? _groupMemberSummariesSubscription;
+  StreamSubscription? _groupOutcomeSubscription;
+  StreamSubscription? _disciplineIdentitySubscription;
+  StreamSubscription? _privacyConsentSubscription;
+  StreamSubscription? _notificationPreferenceSubscription;
+  StreamSubscription? _userNotificationSubscription;
+  String? _listeningGroupId;
+  String? _projectedGroupId;
+  final Set<String> _checkedLegacyGroupIds = {};
   Timer? _dailyResetTimer;
+  Timer? _familySummaryPublishTimer;
+  Timer? _groupResultSummaryPublishTimer;
+  bool _groupChallengeProgressSyncInFlight = false;
+  bool _groupChallengeProgressSyncQueued = false;
+  String? _activePersonalFocusCorrelationId;
+  String? _cloudConfirmedPersonalFocusCorrelationId;
+  List<StudyRoomData> _discoverableStudyRooms = [];
+  final Map<String, RoomActivitySession> _roomActivitySessions = {};
+  final Map<String, String> _roomActiveSessionIds = {};
+  List<Map<String, dynamic>> _canonicalActivitySessionDocuments = [];
+  final Map<String, RoomResonancePreference> _roomResonancePreferences = {};
+  final Map<String, List<RoomResonanceSignal>> _roomResonanceSignals = {};
 
   /// The current user's Firestore uid, falling back to 'local_user' when
   /// the user is not signed in (guest mode / offline).
   String get _myId => _currentUser?.id ?? 'local_user';
+
+  bool get isNudgeDeviceSupported =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  NudgeDeviceRuntime createNudgeDeviceRuntime({
+    NudgeBleTransport? transport,
+    FirestoreDeviceAssignmentRepository? assignmentRepository,
+    String? Function()? currentActorUserId,
+    ActivityLedgerOutbox? activityLedgerOutbox,
+    Future<String> Function()? prepareFocusCorrelation,
+  }) {
+    if (transport == null && !isNudgeDeviceSupported) {
+      throw UnsupportedError('Nudge BLE 目前只支援 Android 實體裝置。');
+    }
+    final outbox = activityLedgerOutbox ?? _activityLedgerOutbox;
+    final resolveActorUserId =
+        currentActorUserId ??
+        () => fb_auth.FirebaseAuth.instance.currentUser?.uid;
+    return NudgeDeviceRuntime(
+      transport: transport ?? AndroidNudgeBleTransport.platform(),
+      assignmentRepository:
+          assignmentRepository ??
+          FirestoreDeviceAssignmentRepository.firebase(),
+      activityLedgerOutbox: outbox,
+      currentActorUserId: resolveActorUserId,
+      prepareFocusCorrelation:
+          prepareFocusCorrelation ??
+          DeviceActivityCorrelationService(
+            outbox: outbox,
+            currentActorUserId: resolveActorUserId,
+            existingCorrelationId: () => _activePersonalFocusCorrelationId,
+            isExistingCorrelationCloudConfirmed: () {
+              final active = _activePersonalFocusCorrelationId;
+              return active != null &&
+                  active == _cloudConfirmedPersonalFocusCorrelationId;
+            },
+          ).prepareFocusCorrelation,
+    );
+  }
 
   void _listenToAuthChanges() {
     try {
@@ -115,8 +291,13 @@ class AppState extends ChangeNotifier {
           _isGuestMode = false;
           await _syncProfileFromFirebaseUser(user);
           _setupFirestoreListeners(user);
+          unawaited(_activityLedgerOutbox.flush());
+          unawaited(_healthSnapshotOutbox.flush());
+          unawaited(_syncPushInstallation(user.uid));
         } else {
           _cancelFirestoreListeners();
+          _pushNotificationService.clearSignedInUser();
+          _pushInstallationConfigured = null;
           _currentUser = null;
           notifyListeners();
         }
@@ -137,8 +318,133 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> get outgoingGuardianRequests =>
       _outgoingGuardianRequests;
 
+  FamilyLinkContract? _familyLink;
+  List<FamilyLinkContract> _familyLinks = [];
+  List<RelationshipMembership> _formalRelationshipMemberships = [];
+  String? _selectedFamilyLinkId;
+  String? _listeningFamilyLinkId;
+  List<Map<String, dynamic>> _familyEncouragements = [];
+  List<Map<String, dynamic>> _familyGoals = [];
+  List<Map<String, dynamic>> _familyBondEvents = [];
+  Map<String, dynamic>? _familySummary;
+  RelationshipOutcome? _familyRelationshipOutcome;
+  List<RelationshipMemory> _familyRelationshipMemories = [];
+  RelationshipOutcome? _groupRelationshipOutcome;
+  DisciplineIdentitySnapshot? _disciplineIdentitySnapshot;
+  bool _isRefreshingDisciplineIdentity = false;
+  String? _disciplineIdentityError;
+  bool _isRefreshingFamilyRelationshipOutcome = false;
+  bool _isRefreshingGroupRelationshipOutcome = false;
+  String? _familyRelationshipOutcomeError;
+  String? _groupRelationshipOutcomeError;
+
+  List<Map<String, dynamic>> _incomingGroupRequests = [];
+  List<Map<String, dynamic>> get incomingGroupRequests =>
+      _incomingGroupRequests;
+
   void _setupFirestoreListeners(fb_auth.User user) {
     _cancelFirestoreListeners();
+    unawaited(_restoreRelationshipSelections(user.uid));
+    _setupRelationshipMembershipListener(user.uid);
+    _disciplineIdentitySubscription = FirebaseFirestore.instance
+        .collection('discipline_identity_snapshots')
+        .doc(user.uid)
+        .snapshots()
+        .listen((snapshot) {
+          if (!snapshot.exists) {
+            _disciplineIdentitySnapshot = null;
+            notifyListeners();
+            return;
+          }
+          try {
+            _disciplineIdentitySnapshot = DisciplineIdentitySnapshot.fromMap(
+              snapshot.data()!,
+              expectedUserId: user.uid,
+            );
+            _disciplineIdentityError = null;
+          } catch (_) {
+            _disciplineIdentitySnapshot = null;
+            _disciplineIdentityError = '自律人格資料不完整，請重新整理。';
+          }
+          notifyListeners();
+        });
+    _privacyConsentSubscription = FirebaseFirestore.instance
+        .collection('privacy_consents')
+        .doc(user.uid)
+        .snapshots()
+        .listen((snapshot) {
+          _cloudPrivacyConsent = snapshot.exists
+              ? PrivacyConsentRecord.fromMap(snapshot.data()!)
+              : null;
+          _hasAcceptedPrivacyPolicy =
+              _cloudPrivacyConsent?.isCurrentHealthConsent ?? false;
+          _privacyAcceptedAt = _hasAcceptedPrivacyPolicy
+              ? _cloudPrivacyConsent?.acceptedAt
+              : null;
+          unawaited(_savePrivacyConsent());
+          notifyListeners();
+        });
+    _notificationPreferenceSubscription = FirebaseFirestore.instance
+        .collection('notification_preferences')
+        .doc(user.uid)
+        .snapshots()
+        .listen(
+          (snapshot) {
+            if (!snapshot.exists) {
+              _cloudNotificationPreferences = null;
+              notifyListeners();
+              return;
+            }
+            try {
+              final record = NotificationPreferenceRecord.fromMap(
+                snapshot.data()!,
+              );
+              if (record.userId != user.uid) {
+                throw const FormatException(
+                  'Notification preference owner mismatch',
+                );
+              }
+              _cloudNotificationPreferences = record;
+              _applyCloudNotificationPreferences();
+              unawaited(_saveReminderSettings());
+              unawaited(_rescheduleLocalReminders());
+              notifyListeners();
+            } catch (error) {
+              debugPrint('Invalid notification preferences: $error');
+            }
+          },
+          onError: (error) {
+            debugPrint('Notification preference listener failed: $error');
+          },
+        );
+    _userNotificationSubscription = FirebaseFirestore.instance
+        .collection('user_notifications')
+        .where('recipientUserId', isEqualTo: user.uid)
+        .orderBy('createdAt', descending: true)
+        .limit(100)
+        .snapshots()
+        .listen(
+          (snapshot) {
+            _userNotifications = snapshot.docs
+                .map((doc) {
+                  try {
+                    return UserNotification.fromMap(
+                      doc.data(),
+                      documentId: doc.id,
+                    );
+                  } catch (error) {
+                    debugPrint('Skipping invalid user notification: $error');
+                    return null;
+                  }
+                })
+                .whereType<UserNotification>()
+                .toList(growable: false);
+            notifyListeners();
+          },
+          onError: (error) {
+            debugPrint('User notification listener failed: $error');
+          },
+        );
 
     // User profile listener
     _userSubscription = FirebaseFirestore.instance
@@ -182,11 +488,7 @@ class AppState extends ChangeNotifier {
                   (k, v) => MapEntry(k.toString(), (v as num).toInt()),
                 );
               }
-              if (data['avatarProfile'] != null) {
-                _avatarProfile = AvatarProfile.fromJson(
-                  Map<String, dynamic>.from(data['avatarProfile'] as Map),
-                );
-              }
+              _applyAvatarExperienceData(data);
               if (data['unlockedAvatarItems'] != null) {
                 _unlockedAvatarItemKeys = Set<String>.from(
                   List<String>.from(data['unlockedAvatarItems']),
@@ -230,7 +532,22 @@ class AppState extends ChangeNotifier {
               _userRole = data['userRole'] as String? ?? _userRole;
               _groupId = data['groupId'] as String?;
               _groupName = data['groupName'] as String?;
-              _isGroupOwner = data['isGroupOwner'] as bool? ?? false;
+              final projectedIsGroupOwner =
+                  data['isGroupOwner'] as bool? ?? false;
+              if (projectedIsGroupOwner &&
+                  _groupId != null &&
+                  _groupName != null) {
+                unawaited(
+                  _migrateLegacyGroupProjection(
+                    user.uid,
+                    _groupId!,
+                    _groupName!,
+                  ),
+                );
+              } else if (_groupId != null) {
+                unawaited(_ensureCanonicalGroupMembership(user.uid, _groupId!));
+              }
+              _setupCanonicalGroupListener(user.uid, _groupId);
               _profileTitleBadgeKey =
                   data['profileTitleBadgeKey'] as String? ?? '';
               if (data['backgroundTheme'] != null) {
@@ -245,12 +562,6 @@ class AppState extends ChangeNotifier {
                 if (cloudFocusSeconds > _focusSeconds) {
                   _focusSeconds = cloudFocusSeconds;
                 }
-              }
-              if (_groupId != null && !_isGroupOwner) {
-                _setupGroupOwnerListener(user.uid, _groupId!);
-              } else {
-                _groupOwnerSubscription?.cancel();
-                _groupOwnerSubscription = null;
               }
               _syncTaskRewards();
               checkWeeklyPlanetSettlement();
@@ -332,8 +643,44 @@ class AppState extends ChangeNotifier {
         .where('memberIds', arrayContains: user.uid)
         .snapshots()
         .listen((snapshot) {
-          _mergeFirestoreRooms(snapshot.docs);
+          final activeRoomDocs = snapshot.docs
+              .where((doc) => doc.data()['status'] != 'closed')
+              .toList(growable: false);
+          _mergeFirestoreRooms(activeRoomDocs);
+          _syncRoomChildListeners(
+            activeRoomDocs.map((doc) => doc.id).toSet(),
+            user.uid,
+          );
         });
+    _roomDiscoverySubscription = FirebaseFirestore.instance
+        .collection('rooms')
+        .where('visibility', isEqualTo: 'public')
+        .where('status', isEqualTo: 'active')
+        .snapshots()
+        .listen((snapshot) {
+          final joinedIds = _studyRooms.map((room) => room.id).toSet();
+          _discoverableStudyRooms = snapshot.docs
+              .where((doc) => !joinedIds.contains(doc.id))
+              .map((doc) => StudyRoomData.fromJson(doc.data()))
+              .toList();
+          notifyListeners();
+        });
+    _activitySessionsSubscription = FirebaseFirestore.instance
+        .collection('activity_sessions')
+        .where('actorUserId', isEqualTo: user.uid)
+        .snapshots()
+        .listen(
+          (snapshot) {
+            _canonicalActivitySessionDocuments = snapshot.docs
+                .map((document) => document.data())
+                .toList(growable: false);
+            _rebuildRoomActivitySessionsFromLedger();
+            notifyListeners();
+          },
+          onError: (error) {
+            debugPrint('Activity Ledger session sync failed: $error');
+          },
+        );
 
     // Shop items listener (dynamic character series)
     _shopSubscription = FirebaseFirestore.instance
@@ -356,22 +703,24 @@ class AppState extends ChangeNotifier {
                   return a.id.compareTo(b.id);
                 });
 
-          final dynamicStages = <AvatarEvolutionStage>[];
+          final publishedSeries = <PublishedAvatarSeries>[];
           var fallbackIndex = 18;
           for (final doc in docs) {
             final data = doc.data();
-            if (data['type'] != 'event_character') continue;
-            final parsedStages = _dynamicStagesFromShopItem(
-              doc.id,
-              data,
-              fallbackIndex,
+            final parsedSeries = PublishedAvatarSeries.tryParseShopDocument(
+              documentId: doc.id,
+              data: data,
+              fallbackIndex: fallbackIndex,
             );
-            if (parsedStages.isEmpty) continue;
-            dynamicStages.addAll(parsedStages);
+            if (parsedSeries == null) continue;
+            publishedSeries.add(parsedSeries);
             fallbackIndex =
-                parsedStages.map((stage) => stage.index).reduce(math.max) + 1;
+                parsedSeries.stages
+                    .map((stage) => stage.index)
+                    .reduce(math.max) +
+                1;
           }
-          AvatarCatalog.replaceDynamicStages(dynamicStages);
+          AvatarCatalog.replacePublishedSeries(publishedSeries);
           _normalizeAvatarProfileForCatalog();
           notifyListeners();
         });
@@ -393,7 +742,8 @@ class AppState extends ChangeNotifier {
           final accepted = docs
               .where((d) => d['status'] == 'accepted')
               .toList();
-          if (accepted.isNotEmpty && !isGuardianLinked) {
+          if (accepted.isNotEmpty &&
+              guardianInvite?['linkId'] != accepted.first['id']) {
             _autoUpdateLinkage(accepted.first, user.uid);
           } else if (accepted.isEmpty && isGuardianLinked) {
             _checkAndAutoClearLinkage(user.uid);
@@ -418,11 +768,26 @@ class AppState extends ChangeNotifier {
           final accepted = docs
               .where((d) => d['status'] == 'accepted')
               .toList();
-          if (accepted.isNotEmpty && !isGuardianLinked) {
+          if (accepted.isNotEmpty &&
+              guardianInvite?['linkId'] != accepted.first['id']) {
             _autoUpdateLinkage(accepted.first, user.uid);
           } else if (accepted.isEmpty && isGuardianLinked) {
             _checkAndAutoClearLinkage(user.uid);
           }
+          notifyListeners();
+        });
+
+    _setupFamilyLinkListener(user.uid);
+
+    _incomingGroupRequestsSubscription = FirebaseFirestore.instance
+        .collection('group_requests')
+        .where('receiverId', isEqualTo: user.uid)
+        .snapshots()
+        .listen((snapshot) {
+          _incomingGroupRequests = snapshot.docs
+              .map((doc) => {'id': doc.id, ...doc.data()})
+              .where((request) => request['status'] == 'pending')
+              .toList(growable: false);
           notifyListeners();
         });
   }
@@ -435,6 +800,8 @@ class AppState extends ChangeNotifier {
   }
 
   bool _isActiveShopItem(Map<String, dynamic> data) {
+    final status = data['status'] as String? ?? 'published';
+    if (status != 'published') return false;
     final type = data['type'] as String? ?? 'permanent';
     final expiresAt = _shopTimestampSeconds(data['expires_at']);
     if (type == 'permanent' || expiresAt == 0) return true;
@@ -446,120 +813,873 @@ class AppState extends ChangeNotifier {
     return startAt <= now && now <= endAt;
   }
 
-  List<AvatarEvolutionStage> _dynamicStagesFromShopItem(
-    String documentId,
-    Map<String, dynamic> data,
-    int fallbackIndex,
-  ) {
-    final seriesName =
-        data['series_name'] as String? ?? data['name'] as String? ?? '活動限定角色';
-    final description = data['description'] as String? ?? 'Web 端上架的活動限時角色。';
-    final price = (data['price'] as num?)?.toInt() ?? 60;
-    final baseIndex = (data['catalog_index_base'] as num?)?.toInt();
-    final rawStages = data['character_stages'];
-
-    if (rawStages is List && rawStages.isNotEmpty) {
-      return rawStages
-          .asMap()
-          .entries
-          .map((entry) {
-            final stageData = Map<String, dynamic>.from(entry.value as Map);
-            final stageNumber =
-                (stageData['stage'] as num?)?.toInt() ?? entry.key + 1;
-            final defaultRequirement = _defaultDynamicStageRequirement(
-              stageNumber,
-            );
-            final characterAsset =
-                stageData['character_asset'] as String? ??
-                stageData['image_path'] as String? ??
-                data['image_path'] as String? ??
-                '';
-            final iconAsset =
-                stageData['icon_asset'] as String? ??
-                stageData['icon_path'] as String? ??
-                characterAsset;
-            return AvatarEvolutionStage(
-              index:
-                  (stageData['catalog_index'] as num?)?.toInt() ??
-                  (baseIndex == null
-                      ? fallbackIndex + entry.key
-                      : baseIndex + stageNumber - 1),
-              series: seriesName,
-              name:
-                  stageData['name'] as String? ??
-                  '$seriesName 第 $stageNumber 階',
-              stage: stageNumber,
-              requiredLevel:
-                  (stageData['required_level'] as num?)?.toInt() ??
-                  defaultRequirement.$1,
-              requiredExperience:
-                  (stageData['required_experience'] as num?)?.toInt() ??
-                  defaultRequirement.$2,
-              description: stageData['description'] as String? ?? description,
-              characterAsset: characterAsset,
-              iconAsset: iconAsset,
-              coinPrice: stageNumber == 1
-                  ? ((stageData['coin_price'] as num?)?.toInt() ?? price)
-                  : 0,
-            );
-          })
-          .toList(growable: false);
-    }
-
-    final imagePath = data['image_path'] as String? ?? '';
-    return [
-      AvatarEvolutionStage(
-        index: baseIndex ?? fallbackIndex,
-        series: seriesName == '活動限定角色' ? '$seriesName $documentId' : seriesName,
-        name: data['name'] as String? ?? '未命名角色',
-        stage: 1,
-        requiredLevel: 1,
-        requiredExperience: 0,
-        description: description,
-        characterAsset: imagePath,
-        iconAsset: imagePath,
-        coinPrice: price,
-      ),
-    ];
-  }
-
-  (int, int) _defaultDynamicStageRequirement(int stage) {
-    if (stage <= 1) return (1, 0);
-    if (stage == 2) return (30, 10000);
-    return (60, 30000);
-  }
-
   /// Merges Firestore room documents into the local _studyRooms list.
   /// Local-only rooms (id starts with 'room_demo_') are kept as-is.
   void _mergeFirestoreRooms(
     List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
   ) {
-    final remoteRooms = docs.map((doc) {
-      final data = doc.data();
-      return StudyRoomData.fromJson(data);
-    }).toList();
+    final remoteRooms = docs
+        .map((doc) => StudyRoomData.fromJson(doc.data()))
+        .toList();
 
     // Keep any demo/local-only rooms that aren't in Firestore.
     final demoRooms = _studyRooms
         .where((r) => r.id.startsWith('room_demo_'))
         .toList();
 
-    // Merge: remote rooms replace local copies (preserving local data for unlisted rooms).
-    final remoteIds = remoteRooms.map((r) => r.id).toSet();
-    final localOnlyRooms = _studyRooms
-        .where(
-          (r) => !remoteIds.contains(r.id) && !r.id.startsWith('room_demo_'),
-        )
-        .toList();
-
-    _studyRooms = [...remoteRooms, ...localOnlyRooms, ...demoRooms];
+    // Firestore membership is authoritative for signed-in rooms. Keeping only
+    // explicit demo rooms prevents removed memberships from lingering locally.
+    _studyRooms = [...remoteRooms, ...demoRooms];
     _syncMyFocusSecondsAcrossRooms();
     _syncStudyRoomGoalTasks();
     _syncStudyGoalTaskCompletion();
     _syncAutoTrackedTasks();
     _syncTaskRewards();
     _syncTodaySummary();
+    _rebuildRoomActivitySessionsFromLedger();
     notifyListeners();
+  }
+
+  StudyMemberData _roomMemberFromProjection(
+    StudyRoomData room,
+    Map<String, dynamic> data,
+  ) {
+    final statusName = data['presenceStatus'] as String? ?? 'offline';
+    final status = StudyMemberStatus.values.firstWhere(
+      (item) => item.name == statusName,
+      orElse: () => StudyMemberStatus.offline,
+    );
+    final metricValue = (data['metricValue'] as num?)?.toDouble() ?? 0;
+    final isFocusMetric =
+        room.goalSourceType == TaskSourceType.studyRoom ||
+        room.goalSourceType == TaskSourceType.focusMinutes;
+    final displayName = data['displayName'] as String? ?? '自律夥伴';
+    return StudyMemberData(
+      memberId: data['memberId'] as String? ?? '',
+      name: displayName,
+      roomNickname: displayName,
+      status: status,
+      sessionSeconds: (data['sessionSeconds'] as num?)?.toInt() ?? 0,
+      todayFocusSeconds: isFocusMetric ? (metricValue * 60).round() : 0,
+      todayMetricValue: metricValue,
+      avatarColor: const Color(0xFF7C6AE6),
+      role: data['role'] as String? ?? 'member',
+      isApproved: data['approvalStatus'] == 'approved',
+    );
+  }
+
+  void _syncRoomChildListeners(Set<String> roomIds, String userId) {
+    for (final roomId
+        in _roomMemberSubscriptions.keys
+            .where((id) => !roomIds.contains(id))
+            .toList()) {
+      _roomMemberSubscriptions.remove(roomId)?.cancel();
+      _roomMessageSubscriptions.remove(roomId)?.cancel();
+      _roomEventSubscriptions.remove(roomId)?.cancel();
+      _roomResonancePreferenceSubscriptions.remove(roomId)?.cancel();
+      _roomResonanceSignalSubscriptions.remove(roomId)?.cancel();
+      _roomActiveSessionIds.remove(roomId);
+      _roomResonancePreferences.remove(roomId);
+      _roomResonanceSignals.remove(roomId);
+      _roomActivitySessions.removeWhere(
+        (_, session) => session.roomId == roomId,
+      );
+    }
+
+    for (final roomId in roomIds) {
+      if (_roomMemberSubscriptions.containsKey(roomId)) continue;
+      _roomMemberSubscriptions[roomId] = FirebaseFirestore.instance
+          .collection('rooms')
+          .doc(roomId)
+          .collection('members')
+          .snapshots()
+          .listen((snapshot) {
+            final roomIndex = _studyRooms.indexWhere(
+              (room) => room.id == roomId,
+            );
+            if (roomIndex == -1) return;
+            final room = _studyRooms[roomIndex];
+            final members = snapshot.docs
+                .map(
+                  (doc) => _roomMemberFromProjection(room, {
+                    ...doc.data(),
+                    'memberId': doc.id,
+                  }),
+                )
+                .toList(growable: false);
+            _studyRooms[roomIndex] = room.copyWith(members: members);
+            final me = members.where(
+              (member) => member.memberId == userId && member.isApproved,
+            );
+            if (me.isNotEmpty) {
+              final myProjection = snapshot.docs.where(
+                (doc) => doc.id == userId,
+              );
+              final activeSessionId = myProjection.isEmpty
+                  ? null
+                  : myProjection.first.data()['activeSessionId'] as String?;
+              if (activeSessionId == null || activeSessionId.isEmpty) {
+                _roomActiveSessionIds.remove(roomId);
+              } else {
+                _roomActiveSessionIds[roomId] = activeSessionId;
+              }
+              _ensureRoomInteractionListeners(roomId);
+            } else {
+              _roomActiveSessionIds.remove(roomId);
+              _roomMessageSubscriptions.remove(roomId)?.cancel();
+              _roomEventSubscriptions.remove(roomId)?.cancel();
+              _roomResonancePreferenceSubscriptions.remove(roomId)?.cancel();
+              _roomResonanceSignalSubscriptions.remove(roomId)?.cancel();
+              _roomResonancePreferences.remove(roomId);
+              _roomResonanceSignals.remove(roomId);
+              _roomActivitySessions.removeWhere(
+                (_, session) => session.roomId == roomId,
+              );
+              _studyRooms[roomIndex] = _studyRooms[roomIndex].copyWith(
+                messages: const [],
+                events: const [],
+              );
+            }
+            notifyListeners();
+          });
+    }
+  }
+
+  void _rebuildRoomActivitySessionsFromLedger() {
+    final sessions = RoomActivitySessionLedgerProjection.restore(
+      documents: _canonicalActivitySessionDocuments,
+      actorUserId: _myId,
+      roomTargetValues: {
+        for (final room in _studyRooms) room.id: _roomActivityTargetValue(room),
+      },
+    );
+    _roomActivitySessions
+      ..clear()
+      ..addAll(sessions);
+  }
+
+  void _ensureRoomInteractionListeners(String roomId) {
+    final roomRef = FirebaseFirestore.instance.collection('rooms').doc(roomId);
+    final userId = _currentUser?.id;
+    if (userId != null &&
+        !_roomResonancePreferenceSubscriptions.containsKey(roomId)) {
+      _roomResonancePreferenceSubscriptions[roomId] = FirebaseFirestore.instance
+          .collection('room_resonance_preferences')
+          .doc('$roomId--$userId')
+          .snapshots()
+          .listen((snapshot) {
+            if (!snapshot.exists) {
+              _roomResonancePreferences.remove(roomId);
+            } else {
+              try {
+                _roomResonancePreferences[roomId] =
+                    RoomResonancePreference.fromMap(
+                      snapshot.data()!,
+                      expectedRoomId: roomId,
+                      expectedUserId: userId,
+                    );
+              } catch (error) {
+                debugPrint(
+                  'Skipping invalid room resonance preference: $error',
+                );
+                _roomResonancePreferences.remove(roomId);
+              }
+            }
+            notifyListeners();
+          });
+    }
+    if (!_roomResonanceSignalSubscriptions.containsKey(roomId)) {
+      _roomResonanceSignalSubscriptions[roomId] = FirebaseFirestore.instance
+          .collection('room_resonance_signals')
+          .where('roomId', isEqualTo: roomId)
+          .snapshots()
+          .listen((snapshot) {
+            final signals = <RoomResonanceSignal>[];
+            for (final document in snapshot.docs) {
+              try {
+                signals.add(
+                  RoomResonanceSignal.fromMap(
+                    document.data(),
+                    expectedRoomId: roomId,
+                  ),
+                );
+              } catch (error) {
+                debugPrint('Skipping invalid room resonance signal: $error');
+              }
+            }
+            signals.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+            _roomResonanceSignals[roomId] = signals;
+            notifyListeners();
+          });
+    }
+    if (!_roomMessageSubscriptions.containsKey(roomId)) {
+      _roomMessageSubscriptions[roomId] = roomRef
+          .collection('messages')
+          .orderBy('createdAt', descending: true)
+          .limit(60)
+          .snapshots()
+          .listen((snapshot) {
+            final roomIndex = _studyRooms.indexWhere(
+              (room) => room.id == roomId,
+            );
+            if (roomIndex == -1) return;
+            final messages =
+                snapshot.docs
+                    .map(
+                      (doc) => StudyRoomMessage.fromJson({
+                        ...doc.data(),
+                        'id': doc.id,
+                      }),
+                    )
+                    .toList()
+                  ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+            _studyRooms[roomIndex] = _studyRooms[roomIndex].copyWith(
+              messages: messages.take(60).toList(growable: false),
+            );
+            notifyListeners();
+          });
+    }
+    if (!_roomEventSubscriptions.containsKey(roomId)) {
+      _roomEventSubscriptions[roomId] = roomRef
+          .collection('events')
+          .orderBy('createdAt', descending: true)
+          .limit(80)
+          .snapshots()
+          .listen((snapshot) {
+            final roomIndex = _studyRooms.indexWhere(
+              (room) => room.id == roomId,
+            );
+            if (roomIndex == -1) return;
+            final events =
+                snapshot.docs
+                    .map(
+                      (doc) => StudyRoomEvent.fromJson({
+                        ...doc.data(),
+                        'id': doc.id,
+                      }),
+                    )
+                    .toList()
+                  ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+            _studyRooms[roomIndex] = _studyRooms[roomIndex].copyWith(
+              events: events.take(80).toList(growable: false),
+            );
+            notifyListeners();
+          });
+    }
+  }
+
+  void _setupFamilyLinkListener(String userId) {
+    _familyLinkSubscription?.cancel();
+    _familyLinkSubscription = FirebaseFirestore.instance
+        .collection('family_links')
+        .where('participantIds', arrayContains: userId)
+        .snapshots()
+        .listen((snapshot) {
+          final activeLinks =
+              snapshot.docs
+                  .where((doc) => doc.data()['status'] == 'active')
+                  .map((doc) => FamilyLinkContract.fromMap(doc.id, doc.data()))
+                  .toList(growable: false)
+                ..sort((a, b) {
+                  final updated = b.updatedAt.compareTo(a.updatedAt);
+                  return updated == 0 ? a.id.compareTo(b.id) : updated;
+                });
+          _familyLinks = activeLinks;
+          if (activeLinks.isEmpty) {
+            _familyLink = null;
+            _selectedFamilyLinkId = null;
+            _clearFamilyInteractionListeners();
+            notifyListeners();
+            return;
+          }
+
+          _activateSelectedFamilyLink(userId);
+          notifyListeners();
+        });
+  }
+
+  void _setupCanonicalGroupListener(String userId, String? groupId) {
+    final normalizedGroupId = groupId?.trim();
+    _projectedGroupId = normalizedGroupId == null || normalizedGroupId.isEmpty
+        ? null
+        : normalizedGroupId;
+    if (_groupSubscription != null) {
+      _activateSelectedGroup(userId);
+      return;
+    }
+
+    _clearGroupPublicationListeners();
+    _canonicalGroup = null;
+    _listeningGroupId = null;
+    _groupSubscription = FirebaseFirestore.instance
+        .collection('groups')
+        .where('memberIds', arrayContains: userId)
+        .snapshots()
+        .listen(
+          (snapshot) {
+            final activeGroups =
+                snapshot.docs
+                    .map((doc) => GroupContract.fromMap(doc.id, doc.data()))
+                    .where((group) => group.isMember(userId))
+                    .toList(growable: false)
+                  ..sort((a, b) {
+                    final name = a.name.compareTo(b.name);
+                    return name == 0 ? a.id.compareTo(b.id) : name;
+                  });
+            _canonicalGroups = activeGroups;
+            if (activeGroups.isEmpty) {
+              _canonicalGroup = null;
+              _selectedGroupId = null;
+              _listeningGroupId = null;
+              _clearGroupPublicationListeners();
+              notifyListeners();
+              return;
+            }
+
+            _activateSelectedGroup(userId);
+            notifyListeners();
+          },
+          onError: (error) {
+            debugPrint('Error listening to canonical group: $error');
+            _canonicalGroup = null;
+            _canonicalGroups = [];
+            _clearGroupPublicationListeners();
+            notifyListeners();
+          },
+        );
+  }
+
+  String _relationshipSelectionKey(String scope, String userId) =>
+      'selected_${scope}_relationship_$userId';
+
+  void _setupRelationshipMembershipListener(String userId) {
+    _relationshipMembershipSubscription?.cancel();
+    _relationshipMembershipSubscription = FirebaseFirestore.instance
+        .collection('relationship_memberships')
+        .where('userId', isEqualTo: userId)
+        .snapshots()
+        .listen(
+          (snapshot) {
+            final memberships = <RelationshipMembership>[];
+            for (final document in snapshot.docs) {
+              try {
+                memberships.add(
+                  RelationshipMembership.fromMap(
+                    document.id,
+                    document.data(),
+                    expectedUserId: userId,
+                  ),
+                );
+              } catch (error) {
+                debugPrint(
+                  'Skipping invalid formal relationship membership: $error',
+                );
+              }
+            }
+            memberships.sort((left, right) {
+              final scope = left.scope.index.compareTo(right.scope.index);
+              if (scope != 0) return scope;
+              final name = left.scopeName.compareTo(right.scopeName);
+              return name == 0 ? left.scopeId.compareTo(right.scopeId) : name;
+            });
+            _formalRelationshipMemberships = memberships;
+            _activateSelectedFamilyLink(userId);
+            _activateSelectedGroup(userId);
+            notifyListeners();
+          },
+          onError: (error) {
+            debugPrint('Error listening to formal memberships: $error');
+            _formalRelationshipMemberships = [];
+            _activateSelectedFamilyLink(userId);
+            _activateSelectedGroup(userId);
+            notifyListeners();
+          },
+        );
+  }
+
+  RelationshipMembership? _activeRelationshipMembership(
+    RelationshipScope scope,
+    String? scopeId,
+  ) {
+    if (scopeId == null) return null;
+    for (final membership in _formalRelationshipMemberships) {
+      if (membership.scope == scope &&
+          membership.scopeId == scopeId &&
+          membership.isActive) {
+        return membership;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _restoreRelationshipSelections(String userId) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (_currentUser?.id != userId) return;
+    _selectedFamilyLinkId = prefs.getString(
+      _relationshipSelectionKey('family', userId),
+    );
+    final groupSelectionKey = _relationshipSelectionKey('group', userId);
+    final legacyGroupId = prefs.getString('group_id_setting');
+    _selectedGroupId = prefs.getString(groupSelectionKey) ?? legacyGroupId;
+    if (prefs.getString(groupSelectionKey) == null && legacyGroupId != null) {
+      await prefs.setString(groupSelectionKey, legacyGroupId);
+    }
+    await prefs.remove('group_id_setting');
+    await prefs.remove('group_name_setting');
+    await prefs.remove('is_group_owner_setting');
+    _activateSelectedFamilyLink(userId);
+    _activateSelectedGroup(userId);
+    notifyListeners();
+  }
+
+  void _activateSelectedFamilyLink(String userId) {
+    final eligibleLinks = _familyLinks
+        .where(
+          (link) =>
+              _activeRelationshipMembership(
+                RelationshipScope.family,
+                link.id,
+              ) !=
+              null,
+        )
+        .toList(growable: false);
+    if (eligibleLinks.isEmpty) {
+      _familyLink = null;
+      _selectedFamilyLinkId = null;
+      _clearFamilyInteractionListeners();
+      return;
+    }
+    final selectedId = _selectedFamilyLinkId;
+    final selected = selectedId == null
+        ? eligibleLinks.first
+        : eligibleLinks.firstWhere(
+            (link) => link.id == selectedId,
+            orElse: () => eligibleLinks.first,
+          );
+    _selectedFamilyLinkId = selected.id;
+    _familyLink = selected;
+    if (_listeningFamilyLinkId != selected.id) {
+      _setupFamilyInteractionListeners(selected.id);
+    }
+    unawaited(_publishFamilySummarySnapshot());
+    unawaited(_refreshRelationshipOutcomeSilently('family', selected.id));
+  }
+
+  void _activateSelectedGroup(String userId) {
+    final eligibleGroups = _canonicalGroups
+        .where(
+          (group) =>
+              _activeRelationshipMembership(
+                RelationshipScope.group,
+                group.id,
+              ) !=
+              null,
+        )
+        .toList(growable: false);
+    if (eligibleGroups.isEmpty) {
+      _canonicalGroup = null;
+      _selectedGroupId = null;
+      _listeningGroupId = null;
+      _clearGroupPublicationListeners();
+      return;
+    }
+    final preferredId = _selectedGroupId ?? _projectedGroupId;
+    final selected = preferredId == null
+        ? eligibleGroups.first
+        : eligibleGroups.firstWhere(
+            (group) => group.id == preferredId,
+            orElse: () => eligibleGroups.first,
+          );
+    _selectedGroupId = selected.id;
+    if (_listeningGroupId != selected.id) {
+      _clearGroupPublicationListeners();
+      _listeningGroupId = selected.id;
+      _setupGroupPublicationListeners(selected.id);
+    }
+    _canonicalGroup = selected;
+    _groupName = selected.name;
+    unawaited(_refreshRelationshipOutcomeSilently('group', selected.id));
+  }
+
+  Future<void> selectFamilyRelationship(String familyLinkId) async {
+    final userId = _currentUser?.id;
+    if (userId == null) throw StateError('請先登入');
+    if (!_familyLinks.any((link) => link.id == familyLinkId) ||
+        _activeRelationshipMembership(RelationshipScope.family, familyLinkId) ==
+            null) {
+      throw ArgumentError('目前帳號沒有這個家庭關係');
+    }
+    _selectedFamilyLinkId = familyLinkId;
+    _activateSelectedFamilyLink(userId);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _relationshipSelectionKey('family', userId),
+      familyLinkId,
+    );
+    notifyListeners();
+  }
+
+  Future<void> selectGroupRelationship(String groupId) async {
+    final userId = _currentUser?.id;
+    if (userId == null) throw StateError('請先登入');
+    if (!_canonicalGroups.any((group) => group.id == groupId) ||
+        _activeRelationshipMembership(RelationshipScope.group, groupId) ==
+            null) {
+      throw ArgumentError('目前帳號不是這個團體的有效成員');
+    }
+    _selectedGroupId = groupId;
+    _activateSelectedGroup(userId);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_relationshipSelectionKey('group', userId), groupId);
+    notifyListeners();
+  }
+
+  Future<RelationshipOutcome> refreshFamilyRelationshipOutcome() async {
+    final scopeId = _selectedFamilyLinkId;
+    if (scopeId == null || _familyLink == null) {
+      throw StateError('目前沒有可更新的家庭關係');
+    }
+    if (_isRefreshingFamilyRelationshipOutcome) {
+      return _familyRelationshipOutcome ?? (throw StateError('家庭樹正在更新，請稍候'));
+    }
+    _isRefreshingFamilyRelationshipOutcome = true;
+    _familyRelationshipOutcomeError = null;
+    notifyListeners();
+    try {
+      final result = await _relationshipOutcomeGateway.refresh(
+        scopeType: 'family',
+        scopeId: scopeId,
+      );
+      if (_selectedFamilyLinkId == scopeId) {
+        _familyRelationshipOutcome = result.outcome;
+        _familyRelationshipMemories = result.memories;
+      }
+      return result.outcome;
+    } catch (error) {
+      if (_selectedFamilyLinkId == scopeId) {
+        _familyRelationshipOutcomeError = _relationshipOutcomeErrorText(error);
+      }
+      rethrow;
+    } finally {
+      if (_selectedFamilyLinkId == scopeId) {
+        _isRefreshingFamilyRelationshipOutcome = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<DisciplineIdentitySnapshot> refreshDisciplineIdentity() async {
+    final userId = _currentUser?.id;
+    if (userId == null || userId == 'local_user') {
+      throw StateError('請先登入後再更新自律人格');
+    }
+    if (_isRefreshingDisciplineIdentity) {
+      return _disciplineIdentitySnapshot ?? (throw StateError('自律人格正在更新，請稍候'));
+    }
+    _isRefreshingDisciplineIdentity = true;
+    _disciplineIdentityError = null;
+    notifyListeners();
+    try {
+      final snapshot = await _disciplineIdentityGateway.refresh(
+        expectedUserId: userId,
+      );
+      if (_currentUser?.id == userId) {
+        _disciplineIdentitySnapshot = snapshot;
+      }
+      return snapshot;
+    } catch (error) {
+      if (_currentUser?.id == userId) {
+        _disciplineIdentityError = error is DisciplineIdentityException
+            ? error.message
+            : '自律人格暫時無法更新，請稍後再試。';
+      }
+      rethrow;
+    } finally {
+      if (_currentUser?.id == userId) {
+        _isRefreshingDisciplineIdentity = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<RelationshipOutcome> refreshGroupRelationshipOutcome() async {
+    final scopeId = _selectedGroupId;
+    if (scopeId == null || _canonicalGroup == null) {
+      throw StateError('目前沒有可更新的團體關係');
+    }
+    if (_isRefreshingGroupRelationshipOutcome) {
+      return _groupRelationshipOutcome ?? (throw StateError('團體星球正在更新，請稍候'));
+    }
+    _isRefreshingGroupRelationshipOutcome = true;
+    _groupRelationshipOutcomeError = null;
+    notifyListeners();
+    try {
+      final result = await _relationshipOutcomeGateway.refresh(
+        scopeType: 'group',
+        scopeId: scopeId,
+      );
+      if (_selectedGroupId == scopeId) {
+        _groupRelationshipOutcome = result.outcome;
+      }
+      return result.outcome;
+    } catch (error) {
+      if (_selectedGroupId == scopeId) {
+        _groupRelationshipOutcomeError = _relationshipOutcomeErrorText(error);
+      }
+      rethrow;
+    } finally {
+      if (_selectedGroupId == scopeId) {
+        _isRefreshingGroupRelationshipOutcome = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> _refreshRelationshipOutcomeSilently(
+    String scopeType,
+    String scopeId,
+  ) async {
+    try {
+      if (scopeType == 'family' &&
+          _selectedFamilyLinkId == scopeId &&
+          !_isRefreshingFamilyRelationshipOutcome) {
+        await refreshFamilyRelationshipOutcome();
+      } else if (scopeType == 'group' &&
+          _selectedGroupId == scopeId &&
+          !_isRefreshingGroupRelationshipOutcome) {
+        await refreshGroupRelationshipOutcome();
+      }
+    } catch (error) {
+      debugPrint('Failed to refresh $scopeType relationship outcome: $error');
+    }
+  }
+
+  String _relationshipOutcomeErrorText(Object error) {
+    if (error is RelationshipOutcomeException) return error.message;
+    return '關係成果暫時無法更新，請稍後再試。';
+  }
+
+  void _setupGroupPublicationListeners(String groupId) {
+    if (_groupChallengeSubscription != null &&
+        _groupChallengeParticipantsSubscription != null &&
+        _groupSchedulesSubscription != null &&
+        _groupTemplateSubscription != null &&
+        _groupMemberSummariesSubscription != null) {
+      return;
+    }
+    final groupRef = FirebaseFirestore.instance
+        .collection('groups')
+        .doc(groupId);
+    _groupOutcomeSubscription = FirebaseFirestore.instance
+        .collection('relationship_outcomes')
+        .doc('group--$groupId')
+        .snapshots()
+        .listen((snapshot) {
+          _groupRelationshipOutcome = snapshot.exists
+              ? RelationshipOutcome.tryFromMap(
+                  snapshot.data()!,
+                  expectedScopeType: 'group',
+                  expectedScopeId: groupId,
+                )
+              : null;
+          notifyListeners();
+        });
+    _groupChallengeSubscription = groupRef
+        .collection('challenges')
+        .doc('current')
+        .snapshots()
+        .listen((snapshot) {
+          _groupChallengePublication = snapshot.exists
+              ? {'id': snapshot.id, ...?snapshot.data()}
+              : null;
+          _ensureCurrentGroupChallengeTasks();
+          _scheduleCurrentGroupChallengeProgressSync();
+          notifyListeners();
+        });
+    _groupChallengeParticipantsSubscription = groupRef
+        .collection('challenges')
+        .doc('current')
+        .collection('participants')
+        .snapshots()
+        .listen((snapshot) {
+          _groupChallengeParticipations = snapshot.docs
+              .map((doc) => {'id': doc.id, ...doc.data()})
+              .toList(growable: false);
+          _ensureCurrentGroupChallengeTasks();
+          _scheduleCurrentGroupChallengeProgressSync();
+          notifyListeners();
+        });
+    _groupSchedulesSubscription = groupRef
+        .collection('study_schedules')
+        .orderBy('createdAt', descending: true)
+        .limit(50)
+        .snapshots()
+        .listen((snapshot) {
+          _groupSchedulePublications = snapshot.docs
+              .map((doc) => {'id': doc.id, ...doc.data()})
+              .toList(growable: false);
+          notifyListeners();
+        });
+    _groupTemplateSubscription = groupRef
+        .collection('templates')
+        .orderBy('updatedAt', descending: true)
+        .limit(50)
+        .snapshots()
+        .listen((snapshot) {
+          _groupTemplatePublications = snapshot.docs
+              .map((doc) => {'id': doc.id, ...doc.data()})
+              .toList(growable: false);
+          notifyListeners();
+        });
+    _groupMemberSummariesSubscription = groupRef
+        .collection('member_summaries')
+        .snapshots()
+        .listen((snapshot) {
+          _groupMemberSummaries =
+              snapshot.docs
+                  .map((doc) => GroupResultSummaryContract.fromMap(doc.data()))
+                  .where((summary) => summary.memberId.isNotEmpty)
+                  .toList(growable: false)
+                ..sort(
+                  (a, b) => b.disciplineScore.compareTo(a.disciplineScore),
+                );
+          _groupResultSharingEnabled = _groupMemberSummaries.any(
+            (summary) => summary.memberId == _currentUser?.id,
+          );
+          notifyListeners();
+        });
+  }
+
+  void _clearGroupPublicationListeners() {
+    _groupChallengeSubscription?.cancel();
+    _groupChallengeParticipantsSubscription?.cancel();
+    _groupSchedulesSubscription?.cancel();
+    _groupTemplateSubscription?.cancel();
+    _groupMemberSummariesSubscription?.cancel();
+    _groupOutcomeSubscription?.cancel();
+    _groupResultSummaryPublishTimer?.cancel();
+    _groupChallengeSubscription = null;
+    _groupChallengeParticipantsSubscription = null;
+    _groupSchedulesSubscription = null;
+    _groupTemplateSubscription = null;
+    _groupMemberSummariesSubscription = null;
+    _groupOutcomeSubscription = null;
+    _groupResultSummaryPublishTimer = null;
+    _groupChallengePublication = null;
+    _groupChallengeParticipations = [];
+    _groupSchedulePublications = [];
+    _groupTemplatePublications = [];
+    _groupMemberSummaries = [];
+    _groupResultSharingEnabled = false;
+    _groupRelationshipOutcome = null;
+    _groupRelationshipOutcomeError = null;
+    _isRefreshingGroupRelationshipOutcome = false;
+  }
+
+  void _setupFamilyInteractionListeners(String linkId) {
+    _clearFamilyInteractionListeners();
+    _listeningFamilyLinkId = linkId;
+    final linkRef = FirebaseFirestore.instance
+        .collection('family_links')
+        .doc(linkId);
+    final outcomeRef = FirebaseFirestore.instance
+        .collection('relationship_outcomes')
+        .doc('family--$linkId');
+    _familyOutcomeSubscription = outcomeRef.snapshots().listen((snapshot) {
+      _familyRelationshipOutcome = snapshot.exists
+          ? RelationshipOutcome.tryFromMap(
+              snapshot.data()!,
+              expectedScopeType: 'family',
+              expectedScopeId: linkId,
+            )
+          : null;
+      notifyListeners();
+    });
+    _familyMemoriesSubscription = outcomeRef
+        .collection('memories')
+        .orderBy('happenedAt', descending: true)
+        .limit(30)
+        .snapshots()
+        .listen((snapshot) {
+          _familyRelationshipMemories = snapshot.docs
+              .map(
+                (doc) => RelationshipMemory.tryFromMap(
+                  doc.data(),
+                  documentId: doc.id,
+                  expectedScopeId: linkId,
+                ),
+              )
+              .whereType<RelationshipMemory>()
+              .toList(growable: false);
+          notifyListeners();
+        });
+
+    _familyEncouragementSubscription = linkRef
+        .collection('encouragements')
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .listen((snapshot) {
+          _familyEncouragements = snapshot.docs
+              .map((doc) => {'id': doc.id, ...doc.data()})
+              .toList(growable: false);
+          notifyListeners();
+        });
+
+    _familyGoalSubscription = linkRef
+        .collection('goals')
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .listen((snapshot) {
+          _familyGoals = snapshot.docs
+              .map((doc) => {'id': doc.id, ...doc.data()})
+              .toList(growable: false);
+          notifyListeners();
+        });
+
+    _familyBondEventSubscription = linkRef
+        .collection('bond_events')
+        .snapshots()
+        .listen((snapshot) {
+          _familyBondEvents = snapshot.docs
+              .map((doc) => {'id': doc.id, ...doc.data()})
+              .toList(growable: false);
+          notifyListeners();
+        });
+
+    _familySummarySubscription = linkRef
+        .collection('summaries')
+        .doc('current')
+        .snapshots()
+        .listen((snapshot) {
+          _familySummary = snapshot.exists ? snapshot.data() : null;
+          notifyListeners();
+        });
+  }
+
+  void _clearFamilyInteractionListeners() {
+    _familyEncouragementSubscription?.cancel();
+    _familyGoalSubscription?.cancel();
+    _familyBondEventSubscription?.cancel();
+    _familySummarySubscription?.cancel();
+    _familyOutcomeSubscription?.cancel();
+    _familyMemoriesSubscription?.cancel();
+    _familySummaryPublishTimer?.cancel();
+    _familyEncouragementSubscription = null;
+    _familyGoalSubscription = null;
+    _familyBondEventSubscription = null;
+    _familySummarySubscription = null;
+    _familyOutcomeSubscription = null;
+    _familyMemoriesSubscription = null;
+    _familySummaryPublishTimer = null;
+    _listeningFamilyLinkId = null;
+    _familyEncouragements = [];
+    _familyGoals = [];
+    _familyBondEvents = [];
+    _familySummary = null;
+    _familyRelationshipOutcome = null;
+    _familyRelationshipMemories = [];
+    _familyRelationshipOutcomeError = null;
+    _isRefreshingFamilyRelationshipOutcome = false;
   }
 
   void _cancelFirestoreListeners() {
@@ -568,27 +1688,118 @@ class AppState extends ChangeNotifier {
     _incomingRequestsSubscription?.cancel();
     _outgoingRequestsSubscription?.cancel();
     _roomsSubscription?.cancel();
+    _roomDiscoverySubscription?.cancel();
+    _activitySessionsSubscription?.cancel();
+    for (final subscription in _roomMemberSubscriptions.values) {
+      subscription.cancel();
+    }
+    for (final subscription in _roomMessageSubscriptions.values) {
+      subscription.cancel();
+    }
+    for (final subscription in _roomEventSubscriptions.values) {
+      subscription.cancel();
+    }
+    for (final subscription in _roomResonancePreferenceSubscriptions.values) {
+      subscription.cancel();
+    }
+    for (final subscription in _roomResonanceSignalSubscriptions.values) {
+      subscription.cancel();
+    }
+    _roomMemberSubscriptions.clear();
+    _roomMessageSubscriptions.clear();
+    _roomEventSubscriptions.clear();
+    _roomResonancePreferenceSubscriptions.clear();
+    _roomResonanceSignalSubscriptions.clear();
     _shopSubscription?.cancel();
     _incomingGuardianRequestsSubscription?.cancel();
     _outgoingGuardianRequestsSubscription?.cancel();
-    _groupOwnerSubscription?.cancel();
+    _familyLinkSubscription?.cancel();
+    _relationshipMembershipSubscription?.cancel();
+    _familyEncouragementSubscription?.cancel();
+    _familyGoalSubscription?.cancel();
+    _familyBondEventSubscription?.cancel();
+    _familySummarySubscription?.cancel();
+    _familyOutcomeSubscription?.cancel();
+    _familyMemoriesSubscription?.cancel();
+    _familySummaryPublishTimer?.cancel();
+    _groupResultSummaryPublishTimer?.cancel();
+    _incomingGroupRequestsSubscription?.cancel();
+    _groupSubscription?.cancel();
+    _privacyConsentSubscription?.cancel();
+    _notificationPreferenceSubscription?.cancel();
+    _userNotificationSubscription?.cancel();
+    _disciplineIdentitySubscription?.cancel();
+    _clearGroupPublicationListeners();
 
     _userSubscription = null;
     _friendsSubscription = null;
     _incomingRequestsSubscription = null;
     _outgoingRequestsSubscription = null;
     _roomsSubscription = null;
+    _roomDiscoverySubscription = null;
+    _activitySessionsSubscription = null;
     _shopSubscription = null;
     _incomingGuardianRequestsSubscription = null;
     _outgoingGuardianRequestsSubscription = null;
-    _groupOwnerSubscription = null;
+    _familyLinkSubscription = null;
+    _relationshipMembershipSubscription = null;
+    _familyEncouragementSubscription = null;
+    _familyGoalSubscription = null;
+    _familyBondEventSubscription = null;
+    _familySummarySubscription = null;
+    _familyOutcomeSubscription = null;
+    _familyMemoriesSubscription = null;
+    _familySummaryPublishTimer = null;
+    _groupResultSummaryPublishTimer = null;
+    _listeningFamilyLinkId = null;
+    _familyLink = null;
+    _familyLinks = [];
+    _formalRelationshipMemberships = [];
+    _selectedFamilyLinkId = null;
+    _familyEncouragements = [];
+    _familyGoals = [];
+    _familyBondEvents = [];
+    _familySummary = null;
+    _familyRelationshipOutcome = null;
+    _familyRelationshipMemories = [];
+    _familyRelationshipOutcomeError = null;
+    _groupRelationshipOutcome = null;
+    _groupRelationshipOutcomeError = null;
+    _isRefreshingFamilyRelationshipOutcome = false;
+    _isRefreshingGroupRelationshipOutcome = false;
+    _incomingGroupRequestsSubscription = null;
+    _groupSubscription = null;
+    _privacyConsentSubscription = null;
+    _notificationPreferenceSubscription = null;
+    _userNotificationSubscription = null;
+    _disciplineIdentitySubscription = null;
+    _cloudPrivacyConsent = null;
+    _cloudNotificationPreferences = null;
+    _userNotifications = [];
+    _disciplineIdentitySnapshot = null;
+    _disciplineIdentityError = null;
+    _isRefreshingDisciplineIdentity = false;
+    _canonicalGroup = null;
+    _canonicalGroups = [];
+    _selectedGroupId = null;
+    _listeningGroupId = null;
+    _projectedGroupId = null;
+    _discoverableStudyRooms = [];
+    _canonicalActivitySessionDocuments = [];
+    _roomActivitySessions.clear();
+    _roomActiveSessionIds.clear();
+    _roomResonancePreferences.clear();
+    _roomResonanceSignals.clear();
   }
 
   @override
   void dispose() {
     _dailyResetTimer?.cancel();
     _dailyResetTimer = null;
+    _familySummaryPublishTimer?.cancel();
+    _familySummaryPublishTimer = null;
     _cancelFirestoreListeners();
+    unawaited(_pushNotificationService.dispose());
     super.dispose();
   }
 
@@ -600,14 +1811,19 @@ class AppState extends ChangeNotifier {
     final senderNudgeId = requestData['senderNudgeId'] as String;
     final receiverNudgeId = requestData['receiverNudgeId'] as String;
     final targetNudgeId = (myUid == senderId) ? receiverNudgeId : senderNudgeId;
+    final targetRole = myUid == senderId
+        ? requestData['receiverRole']
+        : requestData['senderRole'];
 
     try {
       final docRef = FirebaseFirestore.instance.collection('users').doc(myUid);
       await docRef.update({
         'webToolsState.guardianInvite': {
+          'linkId': requestData['id'],
           'relativeId': targetNudgeId,
+          'relativeRole': targetRole,
           'goal': '共同健康與專注',
-          'permission': '完整資料',
+          'permission': '只看總覽',
           'message': '親屬帳號已連結。',
         },
         'webToolsState.guardianInviteStatus': {
@@ -671,6 +1887,7 @@ class AppState extends ChangeNotifier {
         _profileSignature = _currentUser!.signature;
         _myNudgeId = _currentUser!.username;
         await pullDataFromFirestore();
+        await _syncPublicProfile();
       } else {
         final now = DateTime.now();
         _currentUser = UserModel(
@@ -699,6 +1916,69 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  Map<String, dynamic> _buildPublicProfilePayload() {
+    final user = _currentUser!;
+    final avatar = _avatarProfile;
+    final familyRole = const {'guardian', 'child'}.contains(_userRole)
+        ? _userRole
+        : 'personal';
+    return {
+      'schemaVersion': 1,
+      'userId': user.id,
+      'username': user.username,
+      'myNudgeId': _myNudgeId.isEmpty ? user.username : _myNudgeId,
+      'nickname': _profileNickname.trim().isEmpty
+          ? '自律使用者'
+          : _profileNickname.trim(),
+      'signature': _profileSignature.trim(),
+      'avatarProfile': {
+        'skinToneIndex': avatar.skinToneIndex,
+        'faceShapeIndex': avatar.faceShapeIndex,
+        'hairStyleIndex': avatar.hairStyleIndex,
+        'hairColorIndex': avatar.hairColorIndex,
+        'eyeStyleIndex': avatar.eyeStyleIndex,
+        'eyebrowStyleIndex': avatar.eyebrowStyleIndex,
+        'mouthStyleIndex': avatar.mouthStyleIndex,
+        'outfitStyleIndex': avatar.outfitStyleIndex,
+        'outfitColorIndex': avatar.outfitColorIndex,
+        'accessoryIndex': avatar.accessoryIndex,
+        'backgroundColorIndex': avatar.backgroundColorIndex,
+        'avatarIconIndex': avatar.avatarIconIndex,
+      },
+      'accentColor':
+          const {
+            'purple',
+            'blue',
+            'teal',
+            'green',
+            'orange',
+            'pink',
+            'red',
+            'indigo',
+          }.contains(_iconColorSetting)
+          ? _iconColorSetting
+          : 'purple',
+      'planetCount': math.max(0, _planetCount),
+      'familyRole': familyRole,
+      'profileTitleBadgeKey': _profileTitleBadgeKey,
+      'unlockedBadgeDates': _unlockedBadgeDates,
+      'updatedAt': DateTime.now().toUtc().toIso8601String(),
+    };
+  }
+
+  Future<void> _syncPublicProfile() async {
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      await FirebaseFirestore.instance
+          .collection('public_profiles')
+          .doc(user.id)
+          .set(_buildPublicProfilePayload());
+    } catch (error) {
+      debugPrint('Failed to sync public profile: $error');
+    }
+  }
+
   Future<void> syncDataToFirestore() async {
     final user = _currentUser;
     if (user == null) return;
@@ -712,31 +1992,21 @@ class AppState extends ChangeNotifier {
         'myNudgeId': _myNudgeId,
         'themeMode': _themeModeSetting,
         'accentColor': _iconColorSetting,
-        'backgroundTheme': _backgroundThemeSetting,
         'profileTitleBadgeKey': _profileTitleBadgeKey,
-        'disciplineCoins': _disciplineCoins,
         'planetCount': _planetCount,
         'unlockedPlanets': _unlockedPlanets,
         'weeklyPlanetEarned': _weeklyPlanetEarned,
         'lastSettledWeekMonday': _lastSettledWeekMonday,
-        'rewardedTaskKeys': _rewardedTaskKeys.toList(),
-        'dailyCoinEarned': _dailyCoinEarned,
-        'monthlyDeadlineCoinEarned': _monthlyDeadlineCoinEarned,
         'focusSeconds':
             _focusSeconds, // ← synced for web dashboard real-time stats
-        'avatarProfile': _avatarProfile.toJson(),
-        'unlockedAvatarItems': _unlockedAvatarItemKeys.toList(),
-        'tasks': _tasks,
         'dailySummaries': _dailySummaries.map((s) => s.toJson()).toList(),
         'unlockedBadgeDates': _unlockedBadgeDates,
         'userRole': _userRole,
-        'groupId': _groupId,
-        'groupName': _groupName,
-        'isGroupOwner': _isGroupOwner,
         'webToolsState': _webToolsState,
         'webToolsCollection': _webToolsCollection,
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
+      await _syncPublicProfile();
     } catch (e) {
       debugPrint('Failed to sync to Firestore: $e');
     }
@@ -782,11 +2052,7 @@ class AppState extends ChangeNotifier {
             (k, v) => MapEntry(k.toString(), (v as num).toInt()),
           );
         }
-        if (data['avatarProfile'] != null) {
-          _avatarProfile = AvatarProfile.fromJson(
-            Map<String, dynamic>.from(data['avatarProfile']),
-          );
-        }
+        _applyAvatarExperienceData(data);
         if (data['unlockedAvatarItems'] != null) {
           _unlockedAvatarItemKeys = Set<String>.from(
             List<String>.from(data['unlockedAvatarItems']),
@@ -850,6 +2116,7 @@ class AppState extends ChangeNotifier {
         await _saveAppearanceSettings();
         await _saveTasks();
         await _saveDailySummaries();
+        await _saveAvatarExperienceLedger();
         await _saveAvatarUnlockState();
         await _saveRewardState();
       }
@@ -1005,8 +2272,6 @@ class AppState extends ChangeNotifier {
   int _steps = 0;
   int _exerciseMinutes = 0;
   bool _isHealthConnected = false;
-  DateTime? _lastHealthSyncTime;
-  int _lastStepsCount = 0;
   List<DailySummary> _dailySummaries = [];
   int _disciplineCoins = 0;
   int _planetCount = 0;
@@ -1032,6 +2297,9 @@ class AppState extends ChangeNotifier {
   List<ReminderChannelSetting> _reminderSettings = List.of(
     _defaultReminderSettings,
   );
+  NotificationPreferenceRecord? _cloudNotificationPreferences;
+  List<UserNotification> _userNotifications = [];
+  bool _isSyncingNotificationPreferences = false;
 
   AvatarProfile _avatarProfile = AvatarProfile.initial();
 
@@ -1042,6 +2310,7 @@ class AppState extends ChangeNotifier {
   UserModel? _currentUser;
   bool _hasAcceptedPrivacyPolicy = false;
   DateTime? _privacyAcceptedAt;
+  PrivacyConsentRecord? _cloudPrivacyConsent;
   bool _hasCompletedOnboarding = false;
   bool _isHydrated = false;
   Set<String> _seenUnlockedBadgeKeys = <String>{};
@@ -1052,17 +2321,104 @@ class AppState extends ChangeNotifier {
   String _userRole = 'personal';
   String? _groupId;
   String? _groupName;
-  bool _isGroupOwner = false;
+  GroupContract? _canonicalGroup;
+  List<GroupContract> _canonicalGroups = [];
+  String? _selectedGroupId;
+  Map<String, dynamic>? _groupChallengePublication;
+  List<Map<String, dynamic>> _groupChallengeParticipations = [];
+  List<Map<String, dynamic>> _groupSchedulePublications = [];
+  List<Map<String, dynamic>> _groupTemplatePublications = [];
+  List<GroupResultSummaryContract> _groupMemberSummaries = [];
+  bool _groupResultSharingEnabled = false;
 
   List<Map<String, dynamic>> get tasks => _tasks;
   Map<String, dynamic>? get webToolsState => _webToolsState;
   Map<String, dynamic>? get webToolsCollection => _webToolsCollection;
   String get userRole => _userRole;
-  String? get groupId => _groupId;
-  String? get groupName => _groupName;
-  bool get isGroupOwner => _isGroupOwner;
+  GroupContract? get canonicalGroup => _canonicalGroup;
+  List<GroupContract> get canonicalGroups =>
+      List<GroupContract>.unmodifiable(_canonicalGroups);
+  String? get selectedGroupId => _selectedGroupId;
+  String? get groupId => _canonicalGroup?.id;
+  String? get groupName => _canonicalGroup?.name;
+  RelationshipMembership? get currentGroupMembership =>
+      _activeRelationshipMembership(RelationshipScope.group, _selectedGroupId);
+  bool get isGroupOwner =>
+      currentGroupMembership?.role == RelationshipRole.manager;
+  bool get hasActiveGroupMembership => currentGroupMembership != null;
+  List<GroupResultSummaryContract> get groupMemberSummaries =>
+      List<GroupResultSummaryContract>.unmodifiable(_groupMemberSummaries);
+  bool get isGroupResultSharingEnabled => _groupResultSharingEnabled;
+  RelationshipOutcome? get groupRelationshipOutcome =>
+      _groupRelationshipOutcome;
+  DisciplineIdentitySnapshot? get disciplineIdentitySnapshot =>
+      _disciplineIdentitySnapshot;
+  bool get isRefreshingDisciplineIdentity => _isRefreshingDisciplineIdentity;
+  String? get disciplineIdentityError => _disciplineIdentityError;
+  bool get isRefreshingGroupRelationshipOutcome =>
+      _isRefreshingGroupRelationshipOutcome;
+  String? get groupRelationshipOutcomeError => _groupRelationshipOutcomeError;
   bool get isGuardianLinked =>
-      guardianInvite != null && guardianInvite!['status'] == 'linked';
+      _activeRelationshipMembership(
+        RelationshipScope.family,
+        _selectedFamilyLinkId,
+      ) !=
+      null;
+  FamilyLinkContract? get familyLink => _familyLink;
+  List<FamilyLinkContract> get familyLinks =>
+      List<FamilyLinkContract>.unmodifiable(_familyLinks);
+  String? get selectedFamilyLinkId => _selectedFamilyLinkId;
+  RelationshipMembership? get currentFamilyMembership =>
+      _activeRelationshipMembership(
+        RelationshipScope.family,
+        _selectedFamilyLinkId,
+      );
+  bool get isCurrentFamilyGuardian =>
+      currentFamilyMembership?.role == RelationshipRole.guardian;
+  bool get isCurrentFamilyChild =>
+      currentFamilyMembership?.role == RelationshipRole.child;
+  List<RelationshipMembership> get relationshipMemberships =>
+      List<RelationshipMembership>.unmodifiable(
+        _formalRelationshipMemberships.where(
+          (membership) => membership.isActive,
+        ),
+      );
+
+  List<Map<String, dynamic>> get familyGoals => List.unmodifiable(_familyGoals);
+  Map<String, dynamic>? get activeFamilyGoal {
+    for (final goal in _familyGoals) {
+      if (goal['status'] == 'proposed' || goal['status'] == 'accepted') {
+        return Map<String, dynamic>.unmodifiable(goal);
+      }
+    }
+    return null;
+  }
+
+  Map<String, dynamic>? get familySummary => _familySummary == null
+      ? null
+      : Map<String, dynamic>.unmodifiable(_familySummary!);
+  RelationshipOutcome? get familyRelationshipOutcome =>
+      _familyRelationshipOutcome;
+  List<RelationshipMemory> get familyRelationshipMemories =>
+      List<RelationshipMemory>.unmodifiable(_familyRelationshipMemories);
+  bool get isRefreshingFamilyRelationshipOutcome =>
+      _isRefreshingFamilyRelationshipOutcome;
+  String? get familyRelationshipOutcomeError => _familyRelationshipOutcomeError;
+
+  int get familyBondXp => _familyBondEvents.fold<int>(
+    0,
+    (total, event) => total + ((event['points'] as num?)?.toInt() ?? 0),
+  );
+  int get familyBondLevel => FamilyBondPolicy.levelForXp(familyBondXp);
+  ExperienceCapabilities get experienceCapabilities =>
+      ExperienceCapabilities.resolve(
+        rawRole: _userRole,
+        isGroupOwner: isGroupOwner,
+        hasGroup: hasActiveGroupMembership,
+        isGuardianLinked: isGuardianLinked,
+        isFamilyGuardian: isCurrentFamilyGuardian,
+        isFamilyChild: isCurrentFamilyChild,
+      );
 
   Map<String, dynamic>? get guardianInvite {
     if (_webToolsState == null) return null;
@@ -1075,15 +2431,7 @@ class AppState extends ChangeNotifier {
   }
 
   List<Map<String, dynamic>> get guardianEncouragements {
-    if (_webToolsCollection == null ||
-        _webToolsCollection!['encouragements'] == null) {
-      return [];
-    }
-    return List<Map<String, dynamic>>.from(
-      (_webToolsCollection!['encouragements'] as List).map(
-        (x) => Map<String, dynamic>.from(x as Map),
-      ),
-    );
+    return List<Map<String, dynamic>>.unmodifiable(_familyEncouragements);
   }
 
   List<Map<String, dynamic>> get timeCapsules {
@@ -1106,29 +2454,33 @@ class AppState extends ChangeNotifier {
   }
 
   Map<String, dynamic>? get groupChallenge {
-    if (_webToolsState == null || _webToolsState!['challenge'] == null) {
-      return null;
+    return _groupChallengePublication == null
+        ? null
+        : Map<String, dynamic>.unmodifiable(_groupChallengePublication!);
+  }
+
+  List<Map<String, dynamic>> get groupChallengeParticipations =>
+      List<Map<String, dynamic>>.unmodifiable(_groupChallengeParticipations);
+
+  Map<String, dynamic>? get currentGroupChallengeParticipation {
+    final challengeId = _groupChallengePublication?['challengeId']?.toString();
+    final memberId = _currentUser?.id;
+    if (challengeId == null || memberId == null) return null;
+    for (final participation in _groupChallengeParticipations) {
+      if (participation['challengeId'] == challengeId &&
+          participation['memberId'] == memberId) {
+        return Map<String, dynamic>.unmodifiable(participation);
+      }
     }
-    return Map<String, dynamic>.from(_webToolsState!['challenge'] as Map);
+    return null;
   }
 
   List<Map<String, dynamic>> get studySchedules {
-    if (_webToolsCollection == null ||
-        _webToolsCollection!['studySchedules'] == null) {
-      return [];
-    }
-    return List<Map<String, dynamic>>.from(
-      (_webToolsCollection!['studySchedules'] as List).map(
-        (x) => Map<String, dynamic>.from(x as Map),
-      ),
-    );
+    return List<Map<String, dynamic>>.unmodifiable(_groupSchedulePublications);
   }
 
-  Map<String, dynamic>? get examTemplate {
-    if (_webToolsState == null || _webToolsState!['template'] == null) {
-      return null;
-    }
-    return Map<String, dynamic>.from(_webToolsState!['template'] as Map);
+  List<Map<String, dynamic>> get groupTemplates {
+    return List<Map<String, dynamic>>.unmodifiable(_groupTemplatePublications);
   }
 
   int get focusSeconds => _focusSeconds;
@@ -1223,6 +2575,8 @@ class AppState extends ChangeNotifier {
   }
 
   List<StudyRoomData> get studyRooms => _studyRooms;
+  List<StudyRoomData> get discoverableStudyRooms =>
+      List.unmodifiable(_discoverableStudyRooms);
   List<SocialFriendProfile> get socialFriends => _socialFriends;
   List<FriendRequest> get friendRequests => _friendRequests;
   String get myNudgeId => _myNudgeId;
@@ -1244,6 +2598,9 @@ class AppState extends ChangeNotifier {
   bool get isSignedIn => _currentUser != null;
   bool get hasAcceptedPrivacyPolicy => _hasAcceptedPrivacyPolicy;
   DateTime? get privacyAcceptedAt => _privacyAcceptedAt;
+  bool get isPrivacyConsentCloudVerified =>
+      _cloudPrivacyConsent?.isCurrentHealthConsent ?? false;
+  String get privacyPolicyVersion => currentPrivacyPolicyVersion;
   bool get hasCompletedOnboarding => _hasCompletedOnboarding;
   bool get isHydrated => _isHydrated;
   String get accountProviderLabel {
@@ -1288,6 +2645,20 @@ class AppState extends ChangeNotifier {
       List.unmodifiable(_reminderSettings);
   int get enabledReminderCount =>
       _reminderSettings.where((setting) => setting.enabled).length;
+  bool get isNotificationPreferenceCloudVerified =>
+      _cloudNotificationPreferences?.hasCompleteChannelSet ?? false;
+  bool get isPushNotificationConfigured =>
+      _pushInstallationConfigured ??
+      (_cloudNotificationPreferences?.pushConfigured ?? false);
+  bool get isCurrentDevicePushConfigured => _pushInstallationConfigured == true;
+  bool get isDevicePushSupported => _pushNotificationService.isSupported;
+  String? get pendingPushNotificationRoute => _pendingPushNotificationRoute;
+  bool get isSyncingNotificationPreferences =>
+      _isSyncingNotificationPreferences;
+  List<UserNotification> get userNotifications =>
+      List<UserNotification>.unmodifiable(_userNotifications);
+  int get unreadUserNotificationCount =>
+      _userNotifications.where((notification) => notification.isUnread).length;
   String get profileTitle {
     if (_profileTitleBadgeKey.isEmpty) return '';
 
@@ -1498,6 +2869,22 @@ class AppState extends ChangeNotifier {
 
   String avatarItemKey(String category, int index) {
     return '$category:$index';
+  }
+
+  String _avatarEquipmentRequestId(
+    AvatarProfile profile,
+    String backgroundTheme,
+  ) {
+    final canonical = jsonEncode({
+      'avatarProfile': profile.toJson(),
+      'backgroundTheme': backgroundTheme,
+    });
+    var hash = 0xcbf29ce484222325;
+    for (final codeUnit in canonical.codeUnits) {
+      hash ^= codeUnit;
+      hash = (hash * 0x100000001b3) & 0x7fffffffffffffff;
+    }
+    return 'app_equip_${hash.toRadixString(16)}';
   }
 
   bool isAvatarItemUnlocked(String category, int index) {
@@ -2498,33 +3885,6 @@ class AppState extends ChangeNotifier {
     return !today.isBefore(due);
   }
 
-  String _deadlineTaskRewardKey(Map<String, dynamic> task) {
-    final id = task['id'] as String? ?? task['title'] as String? ?? 'unknown';
-    return 'deadline:$id';
-  }
-
-  int _awardDeadlineTaskBonus(Map<String, dynamic> task) {
-    final rewardKey = _deadlineTaskRewardKey(task);
-    if (_rewardedTaskKeys.contains(rewardKey)) return 0;
-
-    final monthlyRemaining = currentMonthDeadlineCoinRemaining;
-    final rewardAmount = deadlineTaskBonusCoins > monthlyRemaining
-        ? monthlyRemaining
-        : deadlineTaskBonusCoins;
-    _rewardedTaskKeys.add(rewardKey);
-    if (rewardAmount <= 0) {
-      _saveRewardState();
-      return 0;
-    }
-
-    final month = _monthKey();
-    _disciplineCoins += rewardAmount;
-    _monthlyDeadlineCoinEarned[month] =
-        (_monthlyDeadlineCoinEarned[month] ?? 0) + rewardAmount;
-    _saveRewardState();
-    return rewardAmount;
-  }
-
   void _syncAutoTrackedTasks() {
     final now = DateTime.now().toIso8601String();
 
@@ -2560,6 +3920,7 @@ class AppState extends ChangeNotifier {
   }
 
   double _taskRewardWeight(Map<String, dynamic> task) {
+    if (GroupChallengeTaskPlan.isGroupChallengeTask(task)) return 0;
     final isAutoTracked = task['isAutoTracked'] as bool? ?? false;
     final isSystemTask = task['isSystemTask'] as bool? ?? false;
     final taskType = task['taskType'] as String? ?? 'fixed';
@@ -2645,34 +4006,7 @@ class AppState extends ChangeNotifier {
   }
 
   void _syncTaskRewards() {
-    bool changed = false;
-    final score = _weightedTaskScore();
-
-    for (final entry in scoreCoinMilestones.entries) {
-      final threshold = entry.key;
-      final coinAmount = entry.value;
-      if (score < threshold) continue;
-
-      final rewardKey = _scoreMilestoneRewardKey(threshold);
-      if (_rewardedTaskKeys.contains(rewardKey)) continue;
-
-      final remaining = scoreCoinRemaining;
-      final rewardAmount = coinAmount > remaining ? remaining : coinAmount;
-      _rewardedTaskKeys.add(rewardKey);
-      if (rewardAmount <= 0) {
-        changed = true;
-        continue;
-      }
-
-      final today = _todayKey();
-      _disciplineCoins += rewardAmount;
-      _dailyCoinEarned[today] = (_dailyCoinEarned[today] ?? 0) + rewardAmount;
-      changed = true;
-    }
-
-    if (changed) {
-      _saveRewardState();
-    }
+    // Formal rewards are applied only from Cloud Reward Ledger receipts.
   }
 
   void _unlockCurrentAvatarProfile() {
@@ -2687,7 +4021,8 @@ class AppState extends ChangeNotifier {
   }
 
   Future<bool> purchaseAvatarItem(String category, int index) async {
-    if (isAvatarItemUnlocked(category, index)) return true;
+    final user = _currentUser;
+    if (user == null && isAvatarItemUnlocked(category, index)) return true;
     if (category == 'appBackground' &&
         (index < 0 || index >= AppUI.backgroundThemeKeys.length)) {
       return false;
@@ -2700,6 +4035,28 @@ class AppState extends ChangeNotifier {
     }
 
     final price = avatarItemPrice(category, index);
+    if (user != null) {
+      try {
+        final result = await _rewardPurchaseGateway.purchase(
+          category: category,
+          index: index,
+          catalogItemId: category == 'faceShape'
+              ? AvatarCatalog.catalogDocumentIdForStage(index)
+              : null,
+          clientRequestId: 'app_purchase_${category}_$index',
+        );
+        _disciplineCoins = result.disciplineCoins;
+        _unlockedAvatarItemKeys = result.unlockedAvatarItems.toSet();
+        notifyListeners();
+        await _saveRewardState();
+        await _saveAvatarUnlockState();
+        return true;
+      } catch (error) {
+        debugPrint('Cloud reward purchase failed: $error');
+        return false;
+      }
+    }
+
     if (_disciplineCoins < price) return false;
 
     _disciplineCoins -= price;
@@ -2756,7 +4113,6 @@ class AppState extends ChangeNotifier {
       _userRole = prefs.getString('user_role_setting') ?? 'personal';
       _groupId = prefs.getString('group_id_setting');
       _groupName = prefs.getString('group_name_setting');
-      _isGroupOwner = prefs.getBool('is_group_owner_setting') ?? false;
       if (prefs.containsKey(_focusSecondsKey)) {
         _focusSeconds = prefs.getInt(_focusSecondsKey) ?? 0;
       } else {
@@ -2770,6 +4126,7 @@ class AppState extends ChangeNotifier {
       await _loadPrivacyConsent();
       await _loadOnboardingState();
       await _loadReminderSettings();
+      _applyCloudNotificationPreferences();
       await _loadSocialEncouragementRecords();
       await _loadUnlockedBadges();
       await _loadSeenUnlockedBadges();
@@ -2812,6 +4169,7 @@ class AppState extends ChangeNotifier {
       await _loadPrivacyConsent();
       await _loadOnboardingState();
       await _loadReminderSettings();
+      _applyCloudNotificationPreferences();
       await _loadSocialEncouragementRecords();
       await _loadUnlockedBadges();
       await _loadSeenUnlockedBadges();
@@ -2985,7 +4343,20 @@ class AppState extends ChangeNotifier {
 
   Future<void> _saveTasks() async {
     await LocalStorageService.saveTasks(_tasks);
-    await syncDataToFirestore();
+    final user = _currentUser;
+    if (user == null) return;
+    try {
+      await FirebaseFirestore.instance.collection('users').doc(user.id).update({
+        'tasks': _tasks,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (error) {
+      debugPrint('Failed to save the task catalog projection: $error');
+    }
+  }
+
+  Future<void> _saveTasksLocally() {
+    return LocalStorageService.saveTasks(_tasks);
   }
 
   Future<void> _saveFocusTime() async {
@@ -3086,19 +4457,39 @@ class AppState extends ChangeNotifier {
     }
 
     try {
-      final decoded = jsonDecode(raw) as Map;
-      _avatarExperienceLedger = decoded.map((date, value) {
-        final rawSeries = value is Map ? value : const <String, dynamic>{};
-        final seriesMap = rawSeries.map(
-          (series, experience) =>
-              MapEntry(series.toString(), (experience as num?)?.round() ?? 0),
-        )..removeWhere((_, experience) => experience <= 0);
-        return MapEntry(date.toString(), seriesMap);
-      })..removeWhere((_, seriesMap) => seriesMap.isEmpty);
+      _avatarExperienceLedger = _parseAvatarExperienceLedger(raw);
     } catch (_) {
       _avatarExperienceLedger = <String, Map<String, int>>{};
       _migrateLegacyAvatarExperienceLedger();
       await _saveAvatarExperienceLedger();
+    }
+  }
+
+  Map<String, Map<String, int>> _parseAvatarExperienceLedger(Object raw) {
+    final decoded = raw is String ? jsonDecode(raw) : raw;
+    if (decoded is! Map) {
+      throw const FormatException('Invalid avatar experience ledger');
+    }
+    return decoded.map((date, value) {
+      final rawSeries = value is Map ? value : const <String, dynamic>{};
+      final seriesMap = rawSeries.map(
+        (series, experience) =>
+            MapEntry(series.toString(), (experience as num?)?.round() ?? 0),
+      )..removeWhere((_, experience) => experience <= 0);
+      return MapEntry(date.toString(), seriesMap);
+    })..removeWhere((_, seriesMap) => seriesMap.isEmpty);
+  }
+
+  void _applyAvatarExperienceData(Map<String, dynamic> data) {
+    final profile = data['avatarProfile'];
+    if (profile is Map) {
+      _avatarProfile = AvatarProfile.fromJson(
+        Map<String, dynamic>.from(profile),
+      );
+    }
+    final ledger = data['avatarExperienceLedger'];
+    if (ledger != null) {
+      _avatarExperienceLedger = _parseAvatarExperienceLedger(ledger);
     }
   }
 
@@ -3131,6 +4522,89 @@ class AppState extends ChangeNotifier {
     await syncDataToFirestore();
   }
 
+  String _roomMetricUnit(StudyRoomData room) {
+    return switch (room.goalSourceType) {
+      TaskSourceType.focusMinutes || TaskSourceType.studyRoom => 'minutes',
+      TaskSourceType.sleepHours => 'hours',
+      TaskSourceType.exerciseMinutes => 'minutes',
+      TaskSourceType.steps => 'steps',
+      TaskSourceType.manual || TaskSourceType.system => room.goalUnitLabel,
+    };
+  }
+
+  double _roomActivityTargetValue(StudyRoomData room) {
+    if (room.goalSourceType == TaskSourceType.studyRoom) {
+      return room.dailyGoalValue * 60;
+    }
+    return room.dailyGoalValue;
+  }
+
+  double _roomMemberMetricValue(StudyRoomData room, StudyMemberData member) {
+    return switch (room.goalSourceType) {
+      TaskSourceType.focusMinutes ||
+      TaskSourceType.studyRoom => member.todayFocusSeconds / 60,
+      TaskSourceType.sleepHours ||
+      TaskSourceType.exerciseMinutes ||
+      TaskSourceType.steps => member.todayMetricValue,
+      TaskSourceType.manual || TaskSourceType.system => member.todayMetricValue,
+    };
+  }
+
+  Map<String, dynamic> _roomMemberProjection(
+    StudyRoomData room,
+    StudyMemberData member,
+    String userId,
+  ) {
+    final memberId = member.memberId == 'local_user' ? userId : member.memberId;
+    return {
+      'schemaVersion': 1,
+      'roomId': room.id,
+      'memberId': memberId,
+      'displayName': member.roomNickname.trim().isEmpty
+          ? member.name
+          : member.roomNickname,
+      'role':
+          room.ownerId == memberId ||
+              (room.ownerId == 'local_user' && memberId == userId)
+          ? 'owner'
+          : 'member',
+      'approvalStatus': member.isApproved ? 'approved' : 'pending',
+      'presenceStatus': member.status.name,
+      'sessionSeconds': member.sessionSeconds,
+      'metricValue': _roomMemberMetricValue(room, member),
+      'metricUnit': _roomMetricUnit(room),
+      'activeSessionId': activeRoomActivitySession(room.id)?.sessionId,
+      'updatedAt': DateTime.now().toUtc().toIso8601String(),
+    };
+  }
+
+  Map<String, dynamic> _roomMetadataPayload(StudyRoomData room, String userId) {
+    final ownerId = room.ownerId == 'local_user' ? userId : room.ownerId;
+    final memberIds = room.members
+        .map((member) {
+          return member.memberId == 'local_user' ? userId : member.memberId;
+        })
+        .where((id) => id.isNotEmpty && id != 'local_user')
+        .toSet()
+        .toList();
+    if (!memberIds.contains(ownerId)) memberIds.add(ownerId);
+    final data = room.toJson()
+      ..remove('members')
+      ..remove('dailyRecords')
+      ..remove('messages')
+      ..remove('events')
+      ..remove('password');
+    return {
+      ...data,
+      'schemaVersion': 2,
+      'ownerId': ownerId,
+      'memberIds': memberIds,
+      'visibility': room.password.isEmpty ? 'public' : 'private',
+      'status': 'active',
+      'updatedAt': DateTime.now().toUtc().toIso8601String(),
+    };
+  }
+
   Future<void> _saveStudyRooms() async {
     // Always persist locally for offline access
     final prefs = await SharedPreferences.getInstance();
@@ -3143,32 +4617,31 @@ class AppState extends ChangeNotifier {
     final user = _currentUser;
     if (user == null) return;
 
-    final batch = FirebaseFirestore.instance.batch();
+    final firestore = FirebaseFirestore.instance;
+    final batch = firestore.batch();
     for (final room in _studyRooms) {
       // Only skip rooms that are purely demo/local placeholders
       if (room.id.startsWith('room_demo_')) continue;
 
-      final data = room.toJson();
-      // Add the memberIds array so we can query rooms by member
-      final memberIds = room.members
-          .where((m) => m.isApproved)
-          .map(
-            (m) => (m.memberId == _myId || m.memberId == 'local_user')
-                ? user.id
-                : m.memberId,
-          )
-          .where((id) => id.isNotEmpty && id != 'local_user')
-          .toSet()
-          .toList();
-      // Always include the current user
-      if (!memberIds.contains(user.id)) memberIds.add(user.id);
-      data['memberIds'] = memberIds;
-      data['updatedAt'] = FieldValue.serverTimestamp();
+      final roomRef = firestore.collection('rooms').doc(room.id);
+      final ownerId = room.ownerId == 'local_user' ? user.id : room.ownerId;
+      if (ownerId == user.id) {
+        batch.set(
+          roomRef,
+          _roomMetadataPayload(room, user.id),
+          SetOptions(merge: true),
+        );
+      }
 
-      final docRef = FirebaseFirestore.instance
-          .collection('rooms')
-          .doc(room.id);
-      batch.set(docRef, data, SetOptions(merge: true));
+      final me = room.members.where((member) {
+        return member.memberId == user.id || member.memberId == 'local_user';
+      });
+      if (me.isNotEmpty) {
+        batch.set(
+          roomRef.collection('members').doc(user.id),
+          _roomMemberProjection(room, me.first, user.id),
+        );
+      }
     }
     try {
       await batch.commit();
@@ -3227,8 +4700,20 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> acceptPrivacyPolicy() async {
-    _hasAcceptedPrivacyPolicy = true;
-    _privacyAcceptedAt = DateTime.now();
+    final userId = _currentUser?.id;
+    if (userId == null) {
+      _hasAcceptedPrivacyPolicy = true;
+      _privacyAcceptedAt = DateTime.now();
+    } else {
+      final result = await _privacyConsentGateway.update(
+        accepted: true,
+        clientRequestId:
+            'privacy_${DateTime.now().toUtc().microsecondsSinceEpoch}',
+      );
+      _cloudPrivacyConsent = result.consent;
+      _hasAcceptedPrivacyPolicy = result.consent.isCurrentHealthConsent;
+      _privacyAcceptedAt = result.consent.acceptedAt;
+    }
     notifyListeners();
     await _savePrivacyConsent();
   }
@@ -3253,11 +4738,22 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> revokePrivacyPolicyConsent() async {
+    final userId = _currentUser?.id;
     _hasAcceptedPrivacyPolicy = false;
     _privacyAcceptedAt = null;
+    _cloudPrivacyConsent = null;
     await clearHealthData();
     notifyListeners();
     await _savePrivacyConsent();
+    if (userId != null) {
+      final result = await _privacyConsentGateway.update(
+        accepted: false,
+        clientRequestId:
+            'privacy_${DateTime.now().toUtc().microsecondsSinceEpoch}',
+      );
+      _cloudPrivacyConsent = result.consent;
+      notifyListeners();
+    }
   }
 
   Future<void> _loadReminderSettings() async {
@@ -3296,7 +4792,64 @@ class AppState extends ChangeNotifier {
     );
   }
 
+  void _applyCloudNotificationPreferences() {
+    final record = _cloudNotificationPreferences;
+    if (record == null) return;
+    _reminderSettings = _defaultReminderSettings
+        .map((fallback) {
+          final channel = record.channels[fallback.key];
+          if (channel == null) return fallback;
+          return fallback.copyWith(
+            timeLabel: channel.timeLabel,
+            enabled: channel.enabled,
+          );
+        })
+        .toList(growable: false);
+  }
+
+  Map<String, NotificationChannelPreference>
+  _notificationPreferenceChannelPayload() {
+    return {
+      for (final setting in _reminderSettings)
+        setting.key: NotificationChannelPreference(
+          enabled: setting.enabled,
+          timeLabel: setting.timeLabel,
+        ),
+    };
+  }
+
+  Future<void> _syncNotificationPreferences() async {
+    final userId = _currentUser?.id;
+    if (userId == null) return;
+    _isSyncingNotificationPreferences = true;
+    notifyListeners();
+    try {
+      final result = await _notificationPreferenceGateway.update(
+        channels: _notificationPreferenceChannelPayload(),
+        clientRequestId:
+            'notification_${DateTime.now().toUtc().microsecondsSinceEpoch}',
+      );
+      if (result.preferences.userId != userId) {
+        throw const NotificationPreferenceException(
+          'protocol-error',
+          '通知設定結果與目前帳號不一致。',
+        );
+      }
+      _cloudNotificationPreferences = result.preferences;
+      _applyCloudNotificationPreferences();
+      await _saveReminderSettings();
+      await _rescheduleLocalReminders();
+    } finally {
+      _isSyncingNotificationPreferences = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> setReminderEnabled(String key, bool enabled) async {
+    if (!_reminderSettings.any((setting) => setting.key == key)) {
+      throw ArgumentError.value(key, 'key', 'Unsupported reminder channel');
+    }
+    final previous = List<ReminderChannelSetting>.of(_reminderSettings);
     _reminderSettings = _reminderSettings.map((setting) {
       if (setting.key != key) return setting;
       return setting.copyWith(enabled: enabled);
@@ -3304,9 +4857,25 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     await _saveReminderSettings();
     await _rescheduleLocalReminders();
+    try {
+      await _syncNotificationPreferences();
+    } catch (_) {
+      _reminderSettings = previous;
+      await _saveReminderSettings();
+      await _rescheduleLocalReminders();
+      notifyListeners();
+      rethrow;
+    }
   }
 
   Future<void> setReminderTime(String key, String timeLabel) async {
+    if (!_reminderSettings.any((setting) => setting.key == key)) {
+      throw ArgumentError.value(key, 'key', 'Unsupported reminder channel');
+    }
+    if (!RegExp(r'^(?:[01]\d|2[0-3]):[0-5]\d$').hasMatch(timeLabel)) {
+      throw ArgumentError.value(timeLabel, 'timeLabel', 'Invalid 24-hour time');
+    }
+    final previous = List<ReminderChannelSetting>.of(_reminderSettings);
     _reminderSettings = _reminderSettings.map((setting) {
       if (setting.key != key) return setting;
       return setting.copyWith(timeLabel: timeLabel);
@@ -3314,18 +4883,71 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     await _saveReminderSettings();
     await _rescheduleLocalReminders();
+    try {
+      await _syncNotificationPreferences();
+    } catch (_) {
+      _reminderSettings = previous;
+      await _saveReminderSettings();
+      await _rescheduleLocalReminders();
+      notifyListeners();
+      rethrow;
+    }
   }
 
   Future<bool> requestNotificationPermissionAndSchedule() async {
     final granted = await NotificationService.requestPermission();
     if (granted) {
       await _rescheduleLocalReminders();
+      final userId = _currentUser?.id;
+      if (userId != null) {
+        _pushInstallationConfigured = await _pushNotificationService
+            .enableForUser(userId);
+        notifyListeners();
+      }
     }
     return granted;
   }
 
+  Future<void> disablePushNotifications() async {
+    final userId = _currentUser?.id;
+    if (userId == null) return;
+    await _pushNotificationService.disableForUser(userId);
+    _pushInstallationConfigured = false;
+    notifyListeners();
+  }
+
+  Future<void> _syncPushInstallation(String userId) async {
+    if (!_pushNotificationService.isSupported) {
+      _pushInstallationConfigured = null;
+      return;
+    }
+    final configured = await _pushNotificationService.syncIfAuthorized(userId);
+    if (_currentUser?.id != userId) return;
+    _pushInstallationConfigured = configured;
+    notifyListeners();
+  }
+
+  void _handlePushNotificationRoute(String route) {
+    _pendingPushNotificationRoute = route;
+    notifyListeners();
+  }
+
+  String? takePendingPushNotificationRoute() {
+    final route = _pendingPushNotificationRoute;
+    _pendingPushNotificationRoute = null;
+    return route;
+  }
+
   Future<void> _rescheduleLocalReminders() async {
     await NotificationService.scheduleDailyReminders(localReminderRequests);
+  }
+
+  Future<void> markUserNotificationRead(String notificationId) async {
+    final notification = _userNotifications.where(
+      (item) => item.id == notificationId,
+    );
+    if (notification.isEmpty || !notification.first.isUnread) return;
+    await _userNotificationGateway.markRead(notificationId);
   }
 
   Future<void> _saveSocialEncouragementRecords() async {
@@ -3978,7 +5600,6 @@ class AppState extends ChangeNotifier {
     }
 
     _saveDailySummaries();
-    _syncAvatarExperienceLedgerForSummary(summary);
   }
 
   void _checkDailyResetSync() {
@@ -4237,61 +5858,134 @@ class AppState extends ChangeNotifier {
     }
 
     _saveDailySummaries();
-    _syncAvatarExperienceLedgerForSummary(summary);
+    _scheduleFamilySummaryPublish();
+    _scheduleGroupResultSummaryPublish();
   }
 
-  void _syncAvatarExperienceLedgerForSummary(DailySummary summary) {
-    final expectedExperience = avatarExperienceForSummary(summary);
-    final seriesExperience = Map<String, int>.from(
-      _avatarExperienceLedger[summary.date] ?? const <String, int>{},
-    );
-    final recordedExperience = seriesExperience.values.fold<int>(
-      0,
-      (acc, value) => acc + value,
-    );
-    final delta = expectedExperience - recordedExperience;
-    if (delta == 0) return;
-
-    if (delta > 0) {
-      final series = currentAvatarSeries;
-      seriesExperience[series] = (seriesExperience[series] ?? 0) + delta;
-    } else {
-      _removeAvatarExperienceFromLedgerEntry(
-        seriesExperience,
-        amount: -delta,
-        preferredSeries: currentAvatarSeries,
-      );
-    }
-
-    seriesExperience.removeWhere((_, experience) => experience <= 0);
-    if (seriesExperience.isEmpty) {
-      _avatarExperienceLedger.remove(summary.date);
-    } else {
-      _avatarExperienceLedger[summary.date] = seriesExperience;
-    }
-    _saveAvatarExperienceLedger();
+  void _scheduleFamilySummaryPublish() {
+    _familySummaryPublishTimer?.cancel();
+    _familySummaryPublishTimer = Timer(const Duration(milliseconds: 800), () {
+      unawaited(_publishFamilySummarySnapshot());
+    });
   }
 
-  void _removeAvatarExperienceFromLedgerEntry(
-    Map<String, int> seriesExperience, {
-    required int amount,
-    required String preferredSeries,
+  Future<void> _publishFamilySummarySnapshot({
+    FamilyConsentScopes? consentOverride,
+  }) async {
+    final link = _familyLink;
+    final user = _currentUser;
+    if (link == null || user == null || user.id != link.childId) return;
+    final consent = consentOverride ?? link.consent;
+    final payload = _buildFamilySummaryPayload(
+      childId: user.id,
+      consent: consent,
+    );
+
+    await FirebaseFirestore.instance
+        .collection('family_links')
+        .doc(link.id)
+        .collection('summaries')
+        .doc('current')
+        .set(payload);
+  }
+
+  void _scheduleGroupResultSummaryPublish() {
+    if (!_groupResultSharingEnabled) return;
+    _groupResultSummaryPublishTimer?.cancel();
+    _groupResultSummaryPublishTimer = Timer(
+      const Duration(milliseconds: 800),
+      () {
+        unawaited(_publishGroupResultSummarySnapshot());
+      },
+    );
+  }
+
+  Future<void> _publishGroupResultSummarySnapshot() async {
+    final group = _canonicalGroup;
+    final user = _currentUser;
+    if (!_groupResultSharingEnabled ||
+        group == null ||
+        user == null ||
+        !group.isMember(user.id)) {
+      return;
+    }
+    final payload = GroupResultSummaryContract.buildPayload(
+      group: group,
+      memberId: user.id,
+      displayName: _profileNickname,
+      disciplineScore: todayWeightedDisciplineScore,
+      completedTasks: todayActionableTaskCompleted,
+      totalTasks: todayActionableTaskTotal,
+      focusMinutes: focusMinutes,
+      steps: steps,
+      sleepHours: sleepHours,
+      now: DateTime.now(),
+    );
+    await FirebaseFirestore.instance
+        .collection('groups')
+        .doc(group.id)
+        .collection('member_summaries')
+        .doc(user.id)
+        .set(payload);
+  }
+
+  Map<String, dynamic> _buildFamilySummaryPayload({
+    required String childId,
+    required FamilyConsentScopes consent,
   }) {
-    var remaining = amount;
+    final payload = <String, dynamic>{
+      'schemaVersion': 1,
+      'childId': childId,
+      'updatedAt': DateTime.now().toUtc().toIso8601String(),
+    };
 
-    void consume(String series) {
-      if (remaining <= 0) return;
-      final available = seriesExperience[series] ?? 0;
-      if (available <= 0) return;
-      final used = math.min(available, remaining);
-      seriesExperience[series] = available - used;
-      remaining -= used;
+    if (consent.summary) {
+      payload['summary'] = {
+        'disciplineScore': todayWeightedDisciplineScore,
+        'completedTasks': todayActionableTaskCompleted,
+        'totalTasks': todayActionableTaskTotal,
+        'focusMinutes': focusMinutes,
+      };
     }
-
-    consume(preferredSeries);
-    for (final series in seriesExperience.keys.toList()) {
-      consume(series);
+    if (consent.weeklyReport) {
+      final recent = _dailySummaries.length > 7
+          ? _dailySummaries.sublist(_dailySummaries.length - 7)
+          : _dailySummaries;
+      payload['weeklyReport'] = recent
+          .map(
+            (summary) => {
+              'date': summary.date,
+              'disciplineScore': summary.disciplineScore,
+              'completedTasks': summary.completedTasks,
+              'totalTasks': summary.totalTasks,
+              'focusMinutes': summary.focusMinutes,
+            },
+          )
+          .toList(growable: false);
     }
+    if (consent.taskCategories) {
+      final categories = <String, Map<String, int>>{};
+      for (final task in _tasks) {
+        final category = task['category']?.toString() ?? '其他';
+        final counts = categories.putIfAbsent(
+          category,
+          () => {'completed': 0, 'total': 0},
+        );
+        counts['total'] = counts['total']! + 1;
+        if (task['done'] == true || task['isDone'] == true) {
+          counts['completed'] = counts['completed']! + 1;
+        }
+      }
+      payload['taskCategories'] = categories;
+    }
+    if (consent.healthTrends) {
+      payload['healthTrends'] = {
+        'sleepHours': sleepHours,
+        'steps': steps,
+        'exerciseMinutes': exerciseMinutes,
+      };
+    }
+    return payload;
   }
 
   Future<void> setThemeModeSetting(String value) async {
@@ -4309,7 +6003,28 @@ class AppState extends ChangeNotifier {
   Future<void> setBackgroundThemeSetting(String value) async {
     final index = AppUI.backgroundThemeKeys.indexOf(value);
     if (index < 0 || !isAvatarItemUnlocked('appBackground', index)) return;
-    _backgroundThemeSetting = value;
+    if (_currentUser != null) {
+      try {
+        final result = await _rewardAvatarGateway.equip(
+          avatarProfile: _avatarProfile,
+          backgroundTheme: value,
+          faceCatalogItemId: AvatarCatalog.catalogDocumentIdForStage(
+            _avatarProfile.faceShapeIndex,
+          ),
+          iconCatalogItemId: AvatarCatalog.catalogDocumentIdForStage(
+            _avatarProfile.avatarIconIndex,
+          ),
+          clientRequestId: _avatarEquipmentRequestId(_avatarProfile, value),
+        );
+        _avatarProfile = result.avatarProfile;
+        _backgroundThemeSetting = result.backgroundTheme;
+      } catch (error) {
+        debugPrint('Cloud background equipment failed: $error');
+        return;
+      }
+    } else {
+      _backgroundThemeSetting = value;
+    }
     notifyListeners();
     await _saveAppearanceSettings();
   }
@@ -4475,34 +6190,64 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> signOut() async {
+    final userId =
+        _currentUser?.id ?? fb_auth.FirebaseAuth.instance.currentUser?.uid;
+    if (userId != null) {
+      await _pushNotificationService.revokeForUser(userId);
+    }
     try {
       await fb_auth.FirebaseAuth.instance.signOut();
     } catch (e) {
       debugPrint('Error signing out of Firebase: $e');
     }
     _currentUser = null;
+    _pushInstallationConfigured = null;
     _isGuestMode = false;
     notifyListeners();
     await _saveCurrentUser();
   }
 
   Future<void> updateAvatarProfile(AvatarProfile profile) async {
-    _avatarProfile = profile;
+    if (_currentUser != null) {
+      try {
+        final result = await _rewardAvatarGateway.equip(
+          avatarProfile: profile,
+          backgroundTheme: _backgroundThemeSetting,
+          faceCatalogItemId: AvatarCatalog.catalogDocumentIdForStage(
+            profile.faceShapeIndex,
+          ),
+          iconCatalogItemId: AvatarCatalog.catalogDocumentIdForStage(
+            profile.avatarIconIndex,
+          ),
+          clientRequestId: _avatarEquipmentRequestId(
+            profile,
+            _backgroundThemeSetting,
+          ),
+        );
+        _avatarProfile = result.avatarProfile;
+        _backgroundThemeSetting = result.backgroundTheme;
+      } catch (error) {
+        debugPrint('Cloud avatar equipment failed: $error');
+        return;
+      }
+    } else {
+      _avatarProfile = profile;
+    }
     _normalizeAvatarProfileForCatalog();
     _syncMyFocusSecondsAcrossRooms();
     notifyListeners();
     await _saveAppearanceSettings();
-    await _saveStudyRooms();
+    try {
+      await _saveStudyRooms();
+    } catch (error) {
+      debugPrint('Failed to sync avatar into room projections: $error');
+    }
     await syncDataToFirestore();
   }
 
   Future<void> updateAvatarIconIndex(int index) async {
     if (!isAvatarIconUnlocked(index)) return;
-    _avatarProfile = _avatarProfile.copyWith(avatarIconIndex: index);
-    _normalizeAvatarProfileForCatalog();
-    notifyListeners();
-    await _saveAppearanceSettings();
-    await syncDataToFirestore();
+    await updateAvatarProfile(_avatarProfile.copyWith(avatarIconIndex: index));
   }
 
   SocialFriendProfile? getSocialFriendById(String id) {
@@ -4519,14 +6264,13 @@ class AppState extends ChangeNotifier {
 
     try {
       final querySnap = await FirebaseFirestore.instance
-          .collection('users')
+          .collection('public_profiles')
           .where('username', isEqualTo: queryId)
           .limit(1)
           .get();
 
       if (querySnap.docs.isNotEmpty) {
         final data = querySnap.docs.first.data();
-        final userModel = UserModel.fromJson(data);
 
         AvatarProfile? avatarProfile;
         if (data['avatarProfile'] != null) {
@@ -4536,12 +6280,13 @@ class AppState extends ChangeNotifier {
         }
 
         return SocialFriendProfile(
-          id: userModel.id,
-          nudgeId: userModel.username,
-          name: userModel.nickname,
-          signature: userModel.signature,
-          todayFocusSeconds: (data['focusSeconds'] as num?)?.toInt() ?? 0,
-          isStudying: data['isStudying'] as bool? ?? false,
+          id: data['userId'] as String? ?? querySnap.docs.first.id,
+          nudgeId:
+              data['myNudgeId'] as String? ?? data['username'] as String? ?? '',
+          name: data['nickname'] as String? ?? '自律使用者',
+          signature: data['signature'] as String? ?? '',
+          todayFocusSeconds: 0,
+          isStudying: false,
           avatarColor: const Color(0xFF7C6AE6),
           avatarProfile: avatarProfile,
           isFollowing: false,
@@ -4552,7 +6297,7 @@ class AppState extends ChangeNotifier {
       debugPrint('Failed to query user by Nudge ID: $e');
     }
 
-    return findFriendCandidateByNudgeId(queryId);
+    return null;
   }
 
   SocialFriendProfile? findFriendCandidateByNudgeId(String rawId) {
@@ -4564,37 +6309,7 @@ class AppState extends ChangeNotifier {
     );
     if (existing.isNotEmpty) return existing.first;
 
-    final mockCandidates = [
-      SocialFriendProfile(
-        id: 'candidate_mina',
-        nudgeId: 'NDG-MINA01',
-        name: '小米',
-        signature: '想找人一起讀書',
-        todayFocusSeconds: 0,
-        isStudying: false,
-        avatarColor: const Color(0xFF8B5CF6),
-        avatarProfile: avatarVariantForSeed(801),
-        isFollowing: false,
-        encouragementCount: 0,
-      ),
-      SocialFriendProfile(
-        id: 'candidate_ray',
-        nudgeId: 'NDG-RAY777',
-        name: '阿睿',
-        signature: '最近在挑戰每天運動',
-        todayFocusSeconds: 35 * 60,
-        isStudying: false,
-        avatarColor: const Color(0xFF10B981),
-        avatarProfile: avatarVariantForSeed(777),
-        isFollowing: false,
-        encouragementCount: 0,
-      ),
-    ];
-
-    final match = mockCandidates.where(
-      (candidate) => candidate.nudgeId.toUpperCase() == nudgeId,
-    );
-    return match.isEmpty ? null : match.first;
+    return null;
   }
 
   Future<SocialFriendProfile?> searchFriendFromInvite(String rawValue) async {
@@ -4638,21 +6353,7 @@ class AppState extends ChangeNotifier {
     final knownCandidate = findFriendCandidateByNudgeId(nudgeId);
     if (knownCandidate != null) return knownCandidate;
 
-    final name = (uri.queryParameters['name'] ?? '').trim();
-    final signature = (uri.queryParameters['signature'] ?? '').trim();
-
-    return SocialFriendProfile(
-      id: 'candidate_${nudgeId.toLowerCase().replaceAll('-', '_')}',
-      nudgeId: nudgeId,
-      name: name.isEmpty ? 'Nudge 好友' : name,
-      signature: signature.isEmpty ? '想和你一起自律前進' : signature,
-      todayFocusSeconds: 0,
-      isStudying: false,
-      avatarColor: const Color(0xFF4F8CFF),
-      avatarProfile: avatarVariantForSeed(nudgeId.hashCode),
-      isFollowing: false,
-      encouragementCount: 0,
-    );
+    return null;
   }
 
   Future<void> addSocialFriend({
@@ -4735,8 +6436,6 @@ class AppState extends ChangeNotifier {
         final senderName = data['senderName'] as String? ?? '';
         final senderSignature = data['senderSignature'] as String? ?? '';
 
-        await docRef.update({'status': 'accepted'});
-
         final myFriendProfile = SocialFriendProfile(
           id: senderId,
           nudgeId: senderNudgeId,
@@ -4748,13 +6447,6 @@ class AppState extends ChangeNotifier {
           isFollowing: true,
           encouragementCount: 0,
         );
-
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.id)
-            .collection('friends')
-            .doc(senderId)
-            .set(myFriendProfile.toJson());
 
         final otherFriendProfile = SocialFriendProfile(
           id: user.id,
@@ -4768,12 +6460,22 @@ class AppState extends ChangeNotifier {
           encouragementCount: 0,
         );
 
-        await FirebaseFirestore.instance
+        final firestore = FirebaseFirestore.instance;
+        final myFriendRef = firestore
+            .collection('users')
+            .doc(user.id)
+            .collection('friends')
+            .doc(senderId);
+        final otherFriendRef = firestore
             .collection('users')
             .doc(senderId)
             .collection('friends')
-            .doc(user.id)
-            .set(otherFriendProfile.toJson());
+            .doc(user.id);
+        final batch = firestore.batch();
+        batch.update(docRef, {'status': 'accepted'});
+        batch.set(myFriendRef, myFriendProfile.toJson());
+        batch.set(otherFriendRef, otherFriendProfile.toJson());
+        await batch.commit();
       }
     } catch (e) {
       debugPrint('Failed to accept friend request: $e');
@@ -4792,6 +6494,52 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> removeSocialFriend(String id) async {
+    final user = _currentUser;
+    if (user != null) {
+      try {
+        final firestore = FirebaseFirestore.instance;
+        final forwardRequest = firestore
+            .collection('friend_requests')
+            .doc('req_${user.id}_$id');
+        final reverseRequest = firestore
+            .collection('friend_requests')
+            .doc('req_${id}_${user.id}');
+        final requestSnapshots = await Future.wait([
+          forwardRequest.get(),
+          reverseRequest.get(),
+        ]);
+        DocumentReference<Map<String, dynamic>>? acceptedRequest;
+        if (requestSnapshots[0].data()?['status'] == 'accepted') {
+          acceptedRequest = forwardRequest;
+        } else if (requestSnapshots[1].data()?['status'] == 'accepted') {
+          acceptedRequest = reverseRequest;
+        }
+        if (acceptedRequest == null) {
+          debugPrint('Failed to delete friend: accepted request not found');
+          return;
+        }
+
+        final myFriendRef = firestore
+            .collection('users')
+            .doc(user.id)
+            .collection('friends')
+            .doc(id);
+        final otherFriendRef = firestore
+            .collection('users')
+            .doc(id)
+            .collection('friends')
+            .doc(user.id);
+        final batch = firestore.batch();
+        batch.update(acceptedRequest, {'status': 'removed'});
+        batch.delete(myFriendRef);
+        batch.delete(otherFriendRef);
+        await batch.commit();
+      } catch (e) {
+        debugPrint('Failed to delete friend from Firestore: $e');
+        return;
+      }
+    }
+
     _socialFriends = _socialFriends.where((f) => f.id != id).toList();
     _socialEncouragementRecords = _socialEncouragementRecords
         .where((record) => record.toFriendId != id)
@@ -4800,26 +6548,6 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     await _saveSocialFriends();
     await _saveSocialEncouragementRecords();
-
-    final user = _currentUser;
-    if (user != null) {
-      try {
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.id)
-            .collection('friends')
-            .doc(id)
-            .delete();
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(id)
-            .collection('friends')
-            .doc(user.id)
-            .delete();
-      } catch (e) {
-        debugPrint('Failed to delete friend from Firestore: $e');
-      }
-    }
   }
 
   Future<void> toggleFollowFriend(String id) async {
@@ -4926,31 +6654,71 @@ class AppState extends ChangeNotifier {
     await _saveSocialEncouragementRecords();
   }
 
-  void toggleTask(int index, bool value) {
+  Future<bool> toggleTask(int index, bool value) async {
     _checkDailyResetSync();
-    if (index < 0 || index >= _tasks.length) return;
+    if (index < 0 || index >= _tasks.length) return false;
     final task = _tasks[index];
     final isDeadlineTask = task['taskType'] == 'deadline';
     final wasDone = task['done'] as bool? ?? false;
+    final wasIsDone = task['isDone'] as bool? ?? wasDone;
 
     if (value && isDeadlineTask && !_isDeadlineTaskReady(task)) {
-      return;
+      return false;
     }
+    if (value &&
+        GroupChallengeTaskPlan.isGroupChallengeTask(task) &&
+        !GroupChallengeTaskPlan.isAvailable(task, now: DateTime.now())) {
+      return false;
+    }
+    if (wasDone == value && wasIsDone == value) return false;
 
-    _tasks[index]['done'] = value;
-    _tasks[index]['isDone'] = value;
-    _tasks[index]['updatedAt'] = DateTime.now().toIso8601String();
-    _tasks[index]['completedAt'] = value
-        ? DateTime.now().toIso8601String()
-        : null;
-    if (value && !wasDone && isDeadlineTask) {
-      _awardDeadlineTaskBonus(_tasks[index]);
+    final occurredAt = DateTime.now();
+    ActivityEvidence? queuedEvidence;
+    if (_currentUser != null) {
+      try {
+        queuedEvidence = await _enqueueTaskActivityLedgerEvent(
+          task,
+          completed: value,
+          occurredAt: occurredAt,
+        );
+      } catch (error) {
+        debugPrint(
+          'Unable to durably enqueue Task Activity Ledger event: $error',
+        );
+        return false;
+      }
     }
-    _syncTaskRewards();
+    final taskId = task['id']?.toString();
+    final currentIndex = _tasks.indexWhere(
+      (candidate) => candidate['id']?.toString() == taskId,
+    );
+    if (taskId == null || taskId.isEmpty || currentIndex < 0) {
+      if (queuedEvidence != null) {
+        await _activityLedgerOutbox.cancel(queuedEvidence);
+      }
+      return false;
+    }
+    final currentTask = _tasks[currentIndex];
+    final currentDone = currentTask['done'] as bool? ?? false;
+    final currentIsDone = currentTask['isDone'] as bool? ?? currentDone;
+    if (currentDone == value && currentIsDone == value) return false;
+    _tasks[currentIndex]['done'] = value;
+    _tasks[currentIndex]['isDone'] = value;
+    _tasks[currentIndex]['updatedAt'] = occurredAt.toIso8601String();
+    _tasks[currentIndex]['completedAt'] = value
+        ? occurredAt.toIso8601String()
+        : null;
     _syncTodaySummary();
     checkWeeklyPlanetSettlement();
     notifyListeners();
-    _saveTasks();
+    try {
+      await _saveTasksLocally();
+    } catch (error) {
+      debugPrint('Task projection save is pending reconciliation: $error');
+    }
+    _scheduleCurrentGroupChallengeProgressSync();
+    if (queuedEvidence != null) unawaited(_flushActivityLedgerOutboxSafely());
+    return true;
   }
 
   void addTask(
@@ -5047,6 +6815,9 @@ class AppState extends ChangeNotifier {
   void deleteTask(int index) {
     if (index < 0 || index >= _tasks.length) return;
 
+    if (_tasks[index]['sourceKind'] == 'groupChallenge') {
+      return;
+    }
     final sourceId = _tasks[index]['sourceId'] as String?;
     if (sourceId != null && sourceId.isNotEmpty) {
       _disableStudyRoomGoalTaskLink(sourceId);
@@ -5140,28 +6911,48 @@ class AppState extends ChangeNotifier {
     _saveTasks();
   }
 
-  void updateHealthData({
+  Future<bool> updateHealthData({
     required bool isConnected,
     required double sleepHours,
     required int steps,
     required int exerciseMinutes,
-  }) {
+    List<HealthActivitySnapshot> snapshots = const [],
+  }) async {
     _checkDailyResetSync();
-    final now = DateTime.now();
-    if (_lastHealthSyncTime != null && steps > _lastStepsCount) {
-      final deltaSteps = steps - _lastStepsCount;
-      final deltaTime = now.difference(_lastHealthSyncTime!);
-      if (!validateActivityLegitimacy(
-        'steps',
-        deltaSteps.toDouble(),
-        deltaTime,
-      )) {
-        debugPrint('Steps synchronization rejected due to velocity check.');
-        return;
+
+    final hasReportedMetrics =
+        sleepHours > 0 || steps > 0 || exerciseMinutes > 0;
+    if (_currentUser != null && hasReportedMetrics && snapshots.isEmpty) {
+      debugPrint(
+        'Signed-in health metrics were not projected because no canonical '
+        'Health Activity Ledger snapshots were supplied.',
+      );
+      return false;
+    }
+
+    if (snapshots.isNotEmpty) {
+      if (_currentUser == null) {
+        debugPrint(
+          'Health Activity Ledger ingestion requires a signed-in user.',
+        );
+        return false;
+      }
+      try {
+        final report = await _queueHealthSnapshots(snapshots);
+        if (report.retryBlocked ||
+            report.permanentlyRejected > 0 ||
+            report.succeeded.length < snapshots.length) {
+          debugPrint(
+            'Health Activity Ledger ingestion was not fully accepted by '
+            'Cloud; the local projection remains unchanged.',
+          );
+          return false;
+        }
+      } catch (error) {
+        debugPrint('Unable to ingest Health Activity Ledger snapshots: $error');
+        return false;
       }
     }
-    _lastHealthSyncTime = now;
-    _lastStepsCount = steps;
 
     _isHealthConnected = isConnected;
     _sleepHours = sleepHours;
@@ -5175,6 +6966,7 @@ class AppState extends ChangeNotifier {
     _saveHealthData();
     _saveStudyRooms();
     _saveTasks();
+    return true;
   }
 
   Future<void> clearHealthData() async {
@@ -5475,22 +7267,96 @@ class AppState extends ChangeNotifier {
     _saveStudyRooms();
   }
 
-  void removeMemberFromRoom({
+  String _studyRoomIdentityName(String roomId) {
+    final room = getStudyRoomById(roomId);
+    if (room != null) {
+      final ownMembers = room.members.where(
+        (member) => member.memberId == _myId || member.memberId == 'local_user',
+      );
+      if (ownMembers.isNotEmpty) {
+        final ownMember = ownMembers.first;
+        final displayName = ownMember.roomNickname.isEmpty
+            ? ownMember.name
+            : ownMember.roomNickname;
+        if (displayName.trim().isNotEmpty) return displayName.trim();
+      }
+    }
+    return _profileNickname.trim().isEmpty ? '自律夥伴' : _profileNickname.trim();
+  }
+
+  StudyRoomEvent _newStudyRoomEvent({
     required String roomId,
-    required String memberName,
+    required String text,
+    required StudyRoomEventType type,
   }) {
+    final now = DateTime.now().toUtc();
+    return StudyRoomEvent(
+      id: 'event_${now.microsecondsSinceEpoch}',
+      actorId: _myId,
+      actorName: _studyRoomIdentityName(roomId),
+      text: text.trim(),
+      type: type,
+      createdAt: now,
+    );
+  }
+
+  Map<String, dynamic> _canonicalRoomEventData(
+    String roomId,
+    StudyRoomEvent event,
+  ) {
+    return {...event.toJson(), 'roomId': roomId};
+  }
+
+  void _appendLocalStudyRoomEvent(String roomId, StudyRoomEvent event) {
     _studyRooms = _studyRooms.map((room) {
       if (room.id != roomId) return room;
-      if (memberName == room.ownerName || memberName == _profileNickname) {
-        return room;
-      }
+      return room.copyWith(
+        events: [
+          event,
+          ...room.events.where((item) => item.id != event.id),
+        ].take(80).toList(),
+      );
+    }).toList();
+  }
 
+  Future<void> removeStudyRoomMember({
+    required String roomId,
+    required String memberId,
+  }) async {
+    final room = getStudyRoomById(roomId);
+    if (room == null) throw StateError('Room not found');
+    if (room.ownerId != _myId && room.ownerId != 'local_user') {
+      throw StateError('Only the room owner can remove members');
+    }
+    final matches = room.members.where(
+      (member) =>
+          member.memberId == memberId &&
+          member.memberId != _myId &&
+          member.memberId != 'local_user' &&
+          member.role != 'owner',
+    );
+    if (matches.isEmpty) {
+      throw StateError('The selected member cannot be removed');
+    }
+    final removedMember = matches.first;
+    final event = _newStudyRoomEvent(
+      roomId: roomId,
+      text:
+          '${removedMember.roomNickname.isEmpty ? removedMember.name : removedMember.roomNickname} 已被移出房間',
+      type: StudyRoomEventType.system,
+    );
+    if (_currentUser != null) {
+      await _removeCanonicalRoomMember(roomId, memberId, auditEvent: event);
+    }
+
+    _studyRooms = _studyRooms.map((room) {
+      if (room.id != roomId) return room;
       final updatedMembers = room.members
-          .where((m) => m.name != memberName)
+          .where((member) => member.memberId != memberId)
           .toList();
-
       return room.copyWith(members: updatedMembers);
     }).toList();
+    _appendLocalStudyRoomEvent(roomId, event);
 
     _syncStudyGoalTaskCompletion();
     _syncAutoTrackedTasks();
@@ -5500,49 +7366,56 @@ class AppState extends ChangeNotifier {
     _saveTasks();
   }
 
-  void approveStudyRoomJoinRequest({
+  Future<void> approveStudyRoomJoinRequest({
     required String roomId,
     required String memberId,
-  }) {
-    final now = DateTime.now();
-    StudyMemberData? approvedMember;
+  }) async {
+    final room = getStudyRoomById(roomId);
+    if (room == null) throw StateError('Room not found');
+    if (room.ownerId != _myId && room.ownerId != 'local_user') {
+      throw StateError('Only the room owner can approve members');
+    }
+    final pendingMembers = room.members.where(
+      (member) => member.memberId == memberId && !member.isApproved,
+    );
+    if (pendingMembers.isEmpty) {
+      throw StateError('The join request no longer exists');
+    }
+    if (room.members.where((member) => member.isApproved).length >=
+        room.memberLimit) {
+      throw StateError('The room has reached its member limit');
+    }
+    final approvedMember = pendingMembers.first.copyWith(isApproved: true);
+    final event = _newStudyRoomEvent(
+      roomId: roomId,
+      text:
+          '${approvedMember.roomNickname.isEmpty ? approvedMember.name : approvedMember.roomNickname} 的加入申請已通過',
+      type: StudyRoomEventType.system,
+    );
+    if (_currentUser != null) {
+      final firestore = FirebaseFirestore.instance;
+      final roomRef = firestore.collection('rooms').doc(roomId);
+      final batch = firestore.batch();
+      batch.update(roomRef.collection('members').doc(memberId), {
+        'approvalStatus': 'approved',
+        'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      });
+      batch.set(
+        roomRef.collection('events').doc(event.id),
+        _canonicalRoomEventData(roomId, event),
+      );
+      await batch.commit();
+    }
 
     _studyRooms = _studyRooms.map((room) {
-      if (room.id != roomId ||
-          (room.ownerId != _myId && room.ownerId != 'local_user')) {
-        return room;
-      }
-      final approvedCount = room.members
-          .where((member) => member.isApproved)
-          .length;
-      if (approvedCount >= room.memberLimit) return room;
-
+      if (room.id != roomId) return room;
       final members = room.members.map((member) {
         if (member.memberId != memberId || member.isApproved) return member;
-        approvedMember = member.copyWith(isApproved: true);
-        return approvedMember!;
+        return approvedMember;
       }).toList();
-
-      if (approvedMember == null) return room;
-
-      return room.copyWith(
-        members: members,
-        events: [
-          StudyRoomEvent(
-            id: 'event_${now.microsecondsSinceEpoch}',
-            actorId: _myId,
-            actorName: _profileNickname,
-            text:
-                '${approvedMember!.roomNickname.isEmpty ? approvedMember!.name : approvedMember!.roomNickname} 的加入申請已通過',
-            type: StudyRoomEventType.system,
-            createdAt: now,
-          ),
-          ...room.events,
-        ].take(80).toList(),
-      );
+      return room.copyWith(members: members);
     }).toList();
-
-    if (approvedMember == null) return;
+    _appendLocalStudyRoomEvent(roomId, event);
 
     _syncStudyRoomGoalTasks();
     _syncStudyGoalTaskCompletion();
@@ -5553,50 +7426,40 @@ class AppState extends ChangeNotifier {
     _saveTasks();
   }
 
-  void rejectStudyRoomJoinRequest({
+  Future<void> rejectStudyRoomJoinRequest({
     required String roomId,
     required String memberId,
-  }) {
-    final now = DateTime.now();
-    StudyMemberData? rejectedMember;
+  }) async {
+    final room = getStudyRoomById(roomId);
+    if (room == null) throw StateError('Room not found');
+    if (room.ownerId != _myId && room.ownerId != 'local_user') {
+      throw StateError('Only the room owner can reject members');
+    }
+    final pendingMembers = room.members.where(
+      (member) => member.memberId == memberId && !member.isApproved,
+    );
+    if (pendingMembers.isEmpty) {
+      throw StateError('The join request no longer exists');
+    }
+    final rejectedMember = pendingMembers.first;
+    final event = _newStudyRoomEvent(
+      roomId: roomId,
+      text:
+          '${rejectedMember.roomNickname.isEmpty ? rejectedMember.name : rejectedMember.roomNickname} 的加入申請已拒絕',
+      type: StudyRoomEventType.system,
+    );
+    if (_currentUser != null) {
+      await _removeCanonicalRoomMember(roomId, memberId, auditEvent: event);
+    }
 
     _studyRooms = _studyRooms.map((room) {
-      if (room.id != roomId ||
-          (room.ownerId != _myId && room.ownerId != 'local_user')) {
-        return room;
-      }
-
-      for (final member in room.members) {
-        if (member.memberId == memberId && !member.isApproved) {
-          rejectedMember = member;
-          break;
-        }
-      }
-
-      if (rejectedMember == null) return room;
-
+      if (room.id != roomId) return room;
       final members = room.members
           .where((member) => member.memberId != memberId)
           .toList();
-
-      return room.copyWith(
-        members: members,
-        events: [
-          StudyRoomEvent(
-            id: 'event_${now.microsecondsSinceEpoch}',
-            actorId: _myId,
-            actorName: _profileNickname,
-            text:
-                '${rejectedMember!.roomNickname.isEmpty ? rejectedMember!.name : rejectedMember!.roomNickname} 的加入申請已拒絕',
-            type: StudyRoomEventType.system,
-            createdAt: now,
-          ),
-          ...room.events,
-        ].take(80).toList(),
-      );
+      return room.copyWith(members: members);
     }).toList();
-
-    if (rejectedMember == null) return;
+    _appendLocalStudyRoomEvent(roomId, event);
 
     _syncStudyGoalTaskCompletion();
     _syncAutoTrackedTasks();
@@ -5606,128 +7469,230 @@ class AppState extends ChangeNotifier {
     _saveTasks();
   }
 
-  void addStudyRoomMessage({
+  Future<void> _removeCanonicalRoomMember(
+    String roomId,
+    String memberId, {
+    StudyRoomEvent? auditEvent,
+  }) async {
+    if (memberId.isEmpty || memberId == _myId) return;
+    final firestore = FirebaseFirestore.instance;
+    final roomRef = firestore.collection('rooms').doc(roomId);
+    final batch = firestore.batch();
+    batch.update(roomRef, {
+      'memberIds': FieldValue.arrayRemove([memberId]),
+      'updatedAt': DateTime.now().toUtc().toIso8601String(),
+    });
+    batch.delete(roomRef.collection('members').doc(memberId));
+    if (auditEvent != null) {
+      batch.set(
+        roomRef.collection('events').doc(auditEvent.id),
+        _canonicalRoomEventData(roomId, auditEvent),
+      );
+    }
+    await batch.commit();
+  }
+
+  Future<void> addStudyRoomMessage({
     required String roomId,
     required String text,
     StudyRoomMessageType type = StudyRoomMessageType.text,
     String senderId = 'local_user',
     String? senderName,
-  }) {
+  }) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
 
-    final now = DateTime.now();
+    final now = DateTime.now().toUtc();
+    final resolvedSenderId = senderId == 'local_user' ? _myId : senderId;
     final message = StudyRoomMessage(
       id: 'message_${now.microsecondsSinceEpoch}',
-      senderId: senderId,
-      senderName: senderName ?? _profileNickname,
+      senderId: resolvedSenderId,
+      senderName: senderName ?? _studyRoomIdentityName(roomId),
       text: trimmed,
       type: type,
       createdAt: now,
     );
 
+    final user = _currentUser;
+    if (user != null) {
+      await FirebaseFirestore.instance
+          .collection('rooms')
+          .doc(roomId)
+          .collection('messages')
+          .doc(message.id)
+          .set({...message.toJson(), 'roomId': roomId});
+    }
+
     _studyRooms = _studyRooms.map((room) {
       if (room.id != roomId) return room;
       return room.copyWith(
-        messages: [message, ...room.messages].take(60).toList(),
+        messages: [
+          message,
+          ...room.messages.where((item) => item.id != message.id),
+        ].take(60).toList(),
       );
     }).toList();
-
     notifyListeners();
-    _saveStudyRooms();
+    await _saveStudyRooms();
   }
 
-  void addStudyRoomEvent({
+  Future<void> addStudyRoomEvent({
     required String roomId,
     required String text,
     StudyRoomEventType type = StudyRoomEventType.system,
     String actorId = 'local_user',
     String? actorName,
-  }) {
+  }) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
 
-    final now = DateTime.now();
-    final event = StudyRoomEvent(
-      id: 'event_${now.microsecondsSinceEpoch}',
-      actorId: actorId,
-      actorName: actorName ?? _profileNickname,
-      text: trimmed,
-      type: type,
-      createdAt: now,
-    );
+    final event = _newStudyRoomEvent(roomId: roomId, text: trimmed, type: type);
+    final resolvedEvent = actorId == 'local_user' && actorName == null
+        ? event
+        : StudyRoomEvent(
+            id: event.id,
+            actorId: actorId == 'local_user' ? _myId : actorId,
+            actorName: actorName ?? event.actorName,
+            text: event.text,
+            type: event.type,
+            createdAt: event.createdAt,
+          );
 
-    _studyRooms = _studyRooms.map((room) {
-      if (room.id != roomId) return room;
-      return room.copyWith(events: [event, ...room.events].take(80).toList());
-    }).toList();
+    final user = _currentUser;
+    if (user != null) {
+      await FirebaseFirestore.instance
+          .collection('rooms')
+          .doc(roomId)
+          .collection('events')
+          .doc(resolvedEvent.id)
+          .set(_canonicalRoomEventData(roomId, resolvedEvent));
+    }
 
+    _appendLocalStudyRoomEvent(roomId, resolvedEvent);
     notifyListeners();
-    _saveStudyRooms();
+    await _saveStudyRooms();
   }
 
-  void leaveStudyRoom(String roomId) {
+  Future<void> transferStudyRoomOwnership({
+    required String roomId,
+    required String newOwnerId,
+  }) async {
+    final room = getStudyRoomById(roomId);
+    if (room == null) throw StateError('Room not found');
+    if (room.ownerId != _myId && room.ownerId != 'local_user') {
+      throw StateError('Only the room owner can transfer ownership');
+    }
+    final nextOwner = room.members.where(
+      (member) =>
+          member.memberId == newOwnerId &&
+          member.isApproved &&
+          member.role != 'owner',
+    );
+    if (nextOwner.isEmpty) {
+      throw StateError('The new owner must be an approved member');
+    }
+    final selectedOwner = nextOwner.first;
+    final nextOwnerName = selectedOwner.roomNickname.isEmpty
+        ? selectedOwner.name
+        : selectedOwner.roomNickname;
+    final event = _newStudyRoomEvent(
+      roomId: roomId,
+      text: '${_studyRoomIdentityName(roomId)} 將房主移交給 $nextOwnerName',
+      type: StudyRoomEventType.system,
+    );
+    final user = _currentUser;
+    if (user != null) {
+      final firestore = FirebaseFirestore.instance;
+      final roomRef = firestore.collection('rooms').doc(roomId);
+      final batch = firestore.batch();
+      final now = DateTime.now().toUtc().toIso8601String();
+      batch.update(roomRef, {
+        'ownerId': newOwnerId,
+        'ownerName': nextOwnerName,
+        'updatedAt': now,
+      });
+      batch.update(roomRef.collection('members').doc(user.id), {
+        'role': 'member',
+        'updatedAt': now,
+      });
+      batch.update(roomRef.collection('members').doc(newOwnerId), {
+        'role': 'owner',
+        'updatedAt': now,
+      });
+      batch.set(
+        roomRef.collection('events').doc(event.id),
+        _canonicalRoomEventData(roomId, event),
+      );
+      await batch.commit();
+    }
+
+    _studyRooms = _studyRooms.map((item) {
+      if (item.id != roomId) return item;
+      return item.copyWith(
+        ownerId: newOwnerId,
+        ownerName: nextOwnerName,
+        members: item.members.map((member) {
+          if (member.memberId == newOwnerId) {
+            return member.copyWith(role: 'owner');
+          }
+          if (member.memberId == _myId ||
+              member.memberId == 'local_user' ||
+              member.role == 'owner') {
+            return member.copyWith(role: 'member');
+          }
+          return member;
+        }).toList(),
+      );
+    }).toList();
+    _appendLocalStudyRoomEvent(roomId, event);
+    notifyListeners();
+    await _saveStudyRooms();
+  }
+
+  Future<void> leaveStudyRoom(String roomId) async {
     final room = getStudyRoomById(roomId);
     if (room == null) return;
 
     final remainingMembers = room.members
         .where(
           (member) =>
-              member.memberId != _myId &&
-              member.memberId != 'local_user' &&
-              member.isApproved,
+              member.memberId != _myId && member.memberId != 'local_user',
         )
         .toList();
-
-    if ((room.ownerId == _myId || room.ownerId == 'local_user') &&
-        remainingMembers.isEmpty) {
-      _studyRooms = _studyRooms.where((item) => item.id != roomId).toList();
-    } else {
-      final nextOwner = (room.ownerId == _myId || room.ownerId == 'local_user')
-          ? remainingMembers.first
-          : null;
-
-      _studyRooms = _studyRooms.map((item) {
-        if (item.id != roomId) return item;
-
-        final updatedMembers = nextOwner == null
-            ? remainingMembers
-            : remainingMembers.map((member) {
-                if (member.memberId != nextOwner.memberId) return member;
-                return member.copyWith(role: 'owner');
-              }).toList();
-
-        final now = DateTime.now();
-        return item.copyWith(
-          ownerId: nextOwner?.memberId ?? item.ownerId,
-          ownerName: nextOwner == null
-              ? item.ownerName
-              : (nextOwner.roomNickname.isEmpty
-                    ? nextOwner.name
-                    : nextOwner.roomNickname),
-          members: updatedMembers,
-          events: [
-            StudyRoomEvent(
-              id: 'event_${now.microsecondsSinceEpoch}',
-              actorId: _myId,
-              actorName: _profileNickname,
-              text: '$_profileNickname 退出了房間',
-              type: StudyRoomEventType.leave,
-              createdAt: now,
-            ),
-            ...item.events,
-          ].take(80).toList(),
-        );
-      }).toList();
+    final isOwner = room.ownerId == _myId || room.ownerId == 'local_user';
+    if (isOwner && remainingMembers.isNotEmpty) {
+      throw StateError('請先移交房主或處理其他成員');
     }
 
+    final user = _currentUser;
+    if (user != null) {
+      final roomRef = FirebaseFirestore.instance
+          .collection('rooms')
+          .doc(roomId);
+      if (isOwner) {
+        await roomRef.update({
+          'status': 'closed',
+          'updatedAt': DateTime.now().toUtc().toIso8601String(),
+        });
+      } else {
+        final batch = FirebaseFirestore.instance.batch();
+        batch.update(roomRef, {
+          'memberIds': FieldValue.arrayRemove([user.id]),
+          'updatedAt': DateTime.now().toUtc().toIso8601String(),
+        });
+        batch.delete(roomRef.collection('members').doc(user.id));
+        await batch.commit();
+      }
+    }
+
+    _studyRooms = _studyRooms.where((item) => item.id != roomId).toList();
     _removeStudyRoomGoalTask(roomId);
     _syncStudyGoalTaskCompletion();
     _syncAutoTrackedTasks();
     _syncTaskRewards();
     notifyListeners();
-    _saveStudyRooms();
-    _saveTasks();
+    await _saveStudyRooms();
+    await _saveTasks();
   }
 
   Future<void> createStudyRoom({
@@ -5756,7 +7721,10 @@ class AppState extends ChangeNotifier {
     String challengeDeadlineLabel = '今天 23:59',
   }) async {
     // Use Firebase uid as ownerId when signed in
-    final resolvedOwnerId = (ownerId == null || ownerId.trim().isEmpty)
+    final resolvedOwnerId =
+        (ownerId == null ||
+            ownerId.trim().isEmpty ||
+            ownerId.trim() == 'local_user')
         ? _myId
         : ownerId.trim();
     final safeOwnerName = (ownerName == null || ownerName.trim().isEmpty)
@@ -5889,11 +7857,11 @@ class AppState extends ChangeNotifier {
     _saveTasks();
   }
 
-  void joinStudyRoomFromDiscovery({
+  Future<void> joinStudyRoomFromDiscovery({
     required StudyRoomData room,
     bool isApproved = true,
     String joinAnswer = '',
-  }) {
+  }) async {
     final now = DateTime.now();
     final localMember = StudyMemberData(
       memberId: _myId,
@@ -5979,8 +7947,32 @@ class AppState extends ChangeNotifier {
     _syncAutoTrackedTasks();
     _syncTaskRewards();
     notifyListeners();
-    _saveStudyRooms();
-    _saveTasks();
+    final joinedRoom = getStudyRoomById(room.id);
+    final user = _currentUser;
+    if (joinedRoom != null && user != null) {
+      final member = joinedRoom.members.firstWhere(
+        (item) => item.memberId == user.id || item.memberId == 'local_user',
+      );
+      final firestore = FirebaseFirestore.instance;
+      final roomRef = firestore.collection('rooms').doc(room.id);
+      final batch = firestore.batch();
+      batch.update(roomRef, {
+        'memberIds': FieldValue.arrayUnion([user.id]),
+        'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      });
+      batch.set(
+        roomRef.collection('members').doc(user.id),
+        _roomMemberProjection(joinedRoom, member, user.id),
+      );
+      try {
+        await batch.commit();
+      } catch (error) {
+        debugPrint('Failed to join canonical room: $error');
+        rethrow;
+      }
+    }
+    await _saveStudyRooms();
+    await _saveTasks();
   }
 
   void updateMyStudyRoomPresence({
@@ -6062,6 +8054,394 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     _saveStudyRooms();
     _saveTasks();
+  }
+
+  List<RoomActivitySession> get roomActivitySessions =>
+      List.unmodifiable(_roomActivitySessions.values);
+
+  bool roomResonanceSharingEnabled(String roomId) =>
+      _roomResonancePreferences[roomId]?.enabled == true;
+
+  List<RoomResonanceSignal> roomResonanceSignals(String roomId) {
+    final now = DateTime.now().toUtc();
+    return List<RoomResonanceSignal>.unmodifiable(
+      (_roomResonanceSignals[roomId] ?? const <RoomResonanceSignal>[]).where(
+        (signal) => signal.isVisibleAt(now),
+      ),
+    );
+  }
+
+  RoomResonanceSignal? myRoomResonanceSignal(String roomId) {
+    final userId = _currentUser?.id;
+    if (userId == null) return null;
+    for (final signal in roomResonanceSignals(roomId)) {
+      if (signal.ownerUserId == userId) return signal;
+    }
+    return null;
+  }
+
+  void _replaceRoomResonanceSignal(RoomResonanceSignal signal) {
+    final current = List<RoomResonanceSignal>.from(
+      _roomResonanceSignals[signal.roomId] ?? const [],
+    )..removeWhere((item) => item.ownerUserId == signal.ownerUserId);
+    current.add(signal);
+    current.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    _roomResonanceSignals[signal.roomId] = current;
+  }
+
+  Future<void> setRoomResonanceSharing({
+    required String roomId,
+    required bool enabled,
+  }) async {
+    final userId = _currentUser?.id;
+    if (userId == null) throw StateError('請先登入後再調整共振分享');
+    final preference = await _roomResonanceGateway.setPreference(
+      roomId: roomId,
+      userId: userId,
+      enabled: enabled,
+    );
+    _roomResonancePreferences[roomId] = preference;
+    if (!enabled) {
+      final current = _roomResonanceSignals[roomId];
+      current?.removeWhere((signal) => signal.ownerUserId == userId);
+    }
+    notifyListeners();
+  }
+
+  Future<RoomResonanceSignal> publishRoomResonance({
+    required String roomId,
+    required RoomResonanceCue cue,
+  }) async {
+    if (_currentUser == null) throw StateError('請先登入後再分享共振訊號');
+    final signal = await _roomResonanceGateway.publish(
+      roomId: roomId,
+      cue: cue,
+    );
+    _replaceRoomResonanceSignal(signal);
+    notifyListeners();
+    return signal;
+  }
+
+  Future<void> withdrawRoomResonance(String roomId) async {
+    final userId = _currentUser?.id;
+    if (userId == null) throw StateError('請先登入後再撤回共振訊號');
+    await _roomResonanceGateway.withdraw(roomId: roomId);
+    _roomResonanceSignals[roomId]?.removeWhere(
+      (signal) => signal.ownerUserId == userId,
+    );
+    notifyListeners();
+  }
+
+  Future<RoomResonanceSignal> acknowledgeRoomResonance({
+    required RoomResonanceSignal signal,
+    required RoomResonanceResponse response,
+  }) async {
+    final userId = _currentUser?.id;
+    if (userId == null || userId == signal.ownerUserId) {
+      throw StateError('只能回應其他成員的共振訊號');
+    }
+    final updated = await _roomResonanceGateway.acknowledge(
+      roomId: signal.roomId,
+      ownerUserId: signal.ownerUserId,
+      generationId: signal.generationId,
+      response: response,
+    );
+    _replaceRoomResonanceSignal(updated);
+    notifyListeners();
+    return updated;
+  }
+
+  RoomActivitySession? activeRoomActivitySession(String roomId) {
+    final activeSessionId = _roomActiveSessionIds[roomId];
+    if (activeSessionId == null) return null;
+    final pointedSession =
+        _roomActivitySessions[RoomActivitySessionLedgerProjection.key(
+          roomId,
+          activeSessionId,
+        )];
+    if (pointedSession == null || pointedSession.isTerminal) return null;
+    return pointedSession;
+  }
+
+  RoomActivityKind _activityKindForRoom(StudyRoomData room) {
+    return switch (room.roomType) {
+      StudyRoomType.study => RoomActivityKind.focus,
+      StudyRoomType.sleep => RoomActivityKind.sleep,
+      StudyRoomType.exercise => RoomActivityKind.exercise,
+      StudyRoomType.steps => RoomActivityKind.steps,
+      StudyRoomType.custom => RoomActivityKind.custom,
+    };
+  }
+
+  Future<RoomActivitySession> startRoomActivitySession({
+    required String roomId,
+    double? targetValue,
+    RoomActivitySource source = RoomActivitySource.app,
+  }) async {
+    final room = getStudyRoomById(roomId);
+    if (room == null) throw StateError('Room not found');
+    final member = room.members.where(
+      (item) =>
+          (item.memberId == _myId || item.memberId == 'local_user') &&
+          item.isApproved,
+    );
+    if (member.isEmpty) {
+      throw StateError('Only an approved member can start an activity');
+    }
+    final existing = activeRoomActivitySession(roomId);
+    if (existing != null) return existing;
+
+    final now = DateTime.now().toUtc();
+    final actorId = _myId;
+    final session = RoomActivitySession.start(
+      sessionId: '${actorId}_${room.id}_${now.microsecondsSinceEpoch}'
+          .replaceAll('/', '_'),
+      roomId: room.id,
+      actorId: actorId,
+      activityKind: _activityKindForRoom(room),
+      metricUnit: _roomMetricUnit(room),
+      targetValue: targetValue ?? _roomActivityTargetValue(room),
+      source: source,
+      now: now,
+    );
+    final evidence = _roomActivityLedgerEvidence(
+      session,
+      ActivityEventType.started,
+    );
+    if (evidence != null) {
+      await _roomActivitySessionLedgerGateway.record(
+        evidence: evidence,
+        session: session,
+      );
+    }
+    _roomActivitySessions[RoomActivitySessionLedgerProjection.key(
+          room.id,
+          session.sessionId,
+        )] =
+        session;
+    _roomActiveSessionIds[roomId] = session.sessionId;
+    notifyListeners();
+    return session;
+  }
+
+  Future<RoomActivitySession> transitionRoomActivitySession({
+    required String roomId,
+    required String sessionId,
+    required RoomActivitySessionStatus status,
+    required double metricValue,
+  }) async {
+    final sessionKey = RoomActivitySessionLedgerProjection.key(
+      roomId,
+      sessionId,
+    );
+    final current = _roomActivitySessions[sessionKey];
+    if (current == null) throw StateError('Room activity session not found');
+    final next = current.transition(
+      actorId: _myId,
+      nextStatus: status,
+      metricValue: metricValue,
+      now: DateTime.now().toUtc(),
+    );
+    final eventType = switch (status) {
+      RoomActivitySessionStatus.active => ActivityEventType.resumed,
+      RoomActivitySessionStatus.paused => ActivityEventType.paused,
+      RoomActivitySessionStatus.completed => ActivityEventType.completed,
+      RoomActivitySessionStatus.cancelled => ActivityEventType.discarded,
+    };
+    final evidence = _roomActivityLedgerEvidence(next, eventType);
+    if (evidence != null) {
+      await _roomActivitySessionLedgerGateway.record(
+        evidence: evidence,
+        session: next,
+      );
+    }
+    _roomActivitySessions[sessionKey] = next;
+    if (next.isTerminal) {
+      _roomActiveSessionIds.remove(current.roomId);
+    }
+    notifyListeners();
+    return next;
+  }
+
+  ActivityEvidence? _roomActivityLedgerEvidence(
+    RoomActivitySession session,
+    ActivityEventType eventType,
+  ) {
+    final user = _currentUser;
+    if (user == null) return null;
+    final source = switch (session.source) {
+      RoomActivitySource.app => ActivitySource.app,
+      RoomActivitySource.web => ActivitySource.web,
+      RoomActivitySource.health => ActivitySource.health,
+      RoomActivitySource.device => ActivitySource.device,
+    };
+    if (source != ActivitySource.app && source != ActivitySource.web) {
+      throw const ActivityValidationException(
+        'Health and device room activity require trusted Cloud ingestion.',
+      );
+    }
+    final activityType = switch (session.activityKind) {
+      RoomActivityKind.focus => ActivityType.focus,
+      RoomActivityKind.sleep => ActivityType.sleep,
+      RoomActivityKind.exercise => ActivityType.exercise,
+      RoomActivityKind.steps => ActivityType.steps,
+      RoomActivityKind.custom => ActivityType.custom,
+    };
+    final eventId = [
+      session.sessionId,
+      eventType.name,
+      session.updatedAt.microsecondsSinceEpoch,
+    ].join('_');
+    return ActivityEvidence(
+      eventId: eventId,
+      sourceRecordId: eventId,
+      sessionId: session.sessionId,
+      activityCorrelationId: session.sessionId,
+      submittedByUserId: user.id,
+      actorUserId: user.id,
+      roomIds: [session.roomId],
+      activityType: activityType,
+      source: source,
+      eventType: eventType,
+      metricValue: session.metricValue,
+      metricUnit: session.metricUnit,
+      occurredAt: session.updatedAt,
+    );
+  }
+
+  Future<void> queuePersonalFocusLedgerEvent({
+    required String sessionId,
+    required ActivityEventType eventType,
+    required int elapsedSeconds,
+    required DateTime occurredAt,
+  }) async {
+    final user = _currentUser;
+    if (user == null) return;
+    final normalizedSeconds = math.max(0, elapsedSeconds);
+    final eventId = [
+      sessionId,
+      eventType.name,
+      occurredAt.toUtc().microsecondsSinceEpoch,
+    ].join('_');
+    await _activityLedgerOutbox.enqueue(
+      ActivityEvidence(
+        eventId: eventId,
+        sourceRecordId: eventId,
+        sessionId: sessionId,
+        activityCorrelationId: sessionId,
+        submittedByUserId: user.id,
+        actorUserId: user.id,
+        roomIds: const [],
+        activityType: ActivityType.focus,
+        source: ActivitySource.app,
+        eventType: eventType,
+        metricValue: normalizedSeconds / 60,
+        metricUnit: 'minutes',
+        occurredAt: occurredAt.toUtc(),
+      ),
+    );
+    if (eventType == ActivityEventType.started ||
+        eventType == ActivityEventType.resumed) {
+      _activePersonalFocusCorrelationId = sessionId;
+      if (eventType == ActivityEventType.started) {
+        _cloudConfirmedPersonalFocusCorrelationId = null;
+      }
+    } else if ((eventType == ActivityEventType.completed ||
+            eventType == ActivityEventType.discarded) &&
+        _activePersonalFocusCorrelationId == sessionId) {
+      _activePersonalFocusCorrelationId = null;
+      _cloudConfirmedPersonalFocusCorrelationId = null;
+    }
+    unawaited(_flushPersonalFocusLedgerEvent(sessionId));
+  }
+
+  Future<void> _flushPersonalFocusLedgerEvent(String sessionId) async {
+    try {
+      final report = await _activityLedgerOutbox.flush();
+      if (_activePersonalFocusCorrelationId == sessionId &&
+          report.succeeded.any(
+            (result) => result.canonicalSessionId == sessionId,
+          )) {
+        _cloudConfirmedPersonalFocusCorrelationId = sessionId;
+      }
+    } catch (_) {
+      // The durable outbox keeps the event for a later authenticated retry.
+    }
+  }
+
+  Future<ActivityEvidence?> _enqueueTaskActivityLedgerEvent(
+    Map<String, dynamic> task, {
+    required bool completed,
+    required DateTime occurredAt,
+  }) async {
+    final user = _currentUser;
+    final taskId = task['id']?.toString().trim() ?? '';
+    if (user == null || taskId.isEmpty) return null;
+    final evidence = TaskActivityEvidenceFactory.build(
+      userId: user.id,
+      taskId: taskId,
+      activityDateKey: TaskActivityEvidenceFactory.activityDateKeyFor(
+        occurredAt,
+      ),
+      completed: completed,
+      occurredAt: occurredAt,
+    );
+    await _activityLedgerOutbox.enqueue(evidence);
+    return evidence;
+  }
+
+  Future<void> _flushActivityLedgerOutboxSafely() async {
+    try {
+      await _activityLedgerOutbox.flush();
+    } catch (error) {
+      debugPrint('Activity Ledger flush remains queued: $error');
+    }
+  }
+
+  List<String> _eligibleRoomIdsForHealthSnapshot(
+    HealthActivitySnapshot snapshot,
+  ) {
+    final sourceType = switch (snapshot.activityType) {
+      ActivityType.sleep => TaskSourceType.sleepHours,
+      ActivityType.steps => TaskSourceType.steps,
+      ActivityType.exercise => TaskSourceType.exerciseMinutes,
+      _ => null,
+    };
+    if (sourceType == null) return const [];
+    final userId = _currentUser?.id;
+    if (userId == null) return const [];
+    return _studyRooms
+        .where(
+          (room) =>
+              room.goalSourceType == sourceType &&
+              room.members.any(
+                (member) =>
+                    member.isApproved &&
+                    (member.memberId == userId ||
+                        member.memberId == 'local_user'),
+              ),
+        )
+        .map((room) => room.id)
+        .toList(growable: false);
+  }
+
+  Future<HealthSnapshotFlushReport> _queueHealthSnapshots(
+    List<HealthActivitySnapshot> snapshots,
+  ) async {
+    if (_currentUser == null) {
+      throw const ActivityAuthorizationException(
+        'Health Activity Ledger ingestion requires a signed-in user.',
+      );
+    }
+    final enriched = snapshots
+        .map(
+          (snapshot) => snapshot.copyWith(
+            roomIds: _eligibleRoomIdsForHealthSnapshot(snapshot),
+          ),
+        )
+        .toList(growable: false);
+    await _healthSnapshotOutbox.enqueueAll(enriched);
+    return _healthSnapshotOutbox.flush();
   }
 
   void clearMyStudyRoomPresence(String roomId) {
@@ -6214,7 +8594,7 @@ ${summaryBuf.toString()}
 3. **[微行動 3]**：[具體且容易執行的精準建議]
 ''';
 
-      final googleAI = FirebaseAI.googleAI(auth: fb_auth.FirebaseAuth.instance);
+      final googleAI = FirebaseAI.googleAI();
       final model = googleAI.generativeModel(model: 'gemini-flash-latest');
 
       final response = await model.generateContent([Content.text(prompt)]);
@@ -6364,70 +8744,261 @@ ${summaryBuf.toString()}
     }
   }
 
-  Future<void> acceptGuardianInvite() async {
-    final user = _currentUser;
-    if (user == null) return;
-    try {
-      final docRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.id);
-      await docRef.update({
-        'webToolsState.guardianInviteStatus': {
-          'status': 'linked',
-          'updatedAt': DateTime.now().toIso8601String(),
-        },
-      });
-    } catch (e) {
-      debugPrint('Failed to accept guardian invite: $e');
-    }
-  }
-
   /// 接受家長共同目標後，自動將目標名稱匯入為每日任務
   Future<void> acceptParentGoalAsTask() async {
-    final invite = guardianInvite;
-    if (invite == null) return;
-    final goal = invite['goal']?.toString() ?? '';
-    if (goal.isEmpty) return;
-    await acceptGuardianInvite();
-    addTask('【家長陪伴目標】$goal', '學習', taskType: 'flexible', priority: '高');
-  }
-
-  /// 加入團體挑戰後，自動匯入每日挑戰任務
-  Future<void> joinGroupChallengeAsTask() async {
-    final challenge = groupChallenge;
-    if (challenge == null) return;
-    final group = challenge['group']?.toString() ?? '自律團體';
-    final type = challenge['type']?.toString() ?? '自律挑戰';
-    final days = (challenge['days'] as num?)?.toInt() ?? 7;
-    for (int d = 1; d <= days; d++) {
-      String title;
-      if (d == 1) {
-        title = '【$group】$type — 第$d天（啟動）';
-      } else if (d == days) {
-        title = '【$group】$type — 第$d天（完成衝刺）';
-      } else {
-        title = '【$group】$type — 第$d天';
-      }
-      addTask(title, '學習', taskType: 'flexible', priority: '中');
+    final link = _familyLink;
+    final familyGoal = activeFamilyGoal;
+    if (link != null &&
+        _currentUser?.id == link.childId &&
+        familyGoal != null &&
+        familyGoal['status'] == 'proposed') {
+      final goalId = familyGoal['id'] as String?;
+      final goal = familyGoal['title']?.toString() ?? '';
+      if (goalId == null || goal.isEmpty) return;
+      await FirebaseFirestore.instance
+          .collection('family_links')
+          .doc(link.id)
+          .collection('goals')
+          .doc(goalId)
+          .update({
+            'status': 'accepted',
+            'acceptedAt': DateTime.now().toUtc().toIso8601String(),
+            'updatedAt': DateTime.now().toUtc().toIso8601String(),
+          });
+      addTask('【家庭共同目標】$goal', '學習', taskType: 'flexible', priority: '高');
+      return;
     }
   }
 
-  Future<void> declineGuardianInvite() async {
-    final user = _currentUser;
-    if (user == null) return;
-    try {
-      final docRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.id);
-      await docRef.update({
-        'webToolsState.guardianInviteStatus': {
+  Future<void> declineFamilyGoal(String goalId) async {
+    final link = _familyLink;
+    if (link == null || _currentUser?.id != link.childId) return;
+    await FirebaseFirestore.instance
+        .collection('family_links')
+        .doc(link.id)
+        .collection('goals')
+        .doc(goalId)
+        .update({
           'status': 'declined',
-          'updatedAt': DateTime.now().toIso8601String(),
-        },
+          'declinedAt': DateTime.now().toUtc().toIso8601String(),
+          'updatedAt': DateTime.now().toUtc().toIso8601String(),
+        });
+  }
+
+  Future<void> completeFamilyGoal(String goalId) async {
+    final link = _familyLink;
+    final user = _currentUser;
+    if (link == null || user == null || user.id != link.childId) return;
+    final firestore = FirebaseFirestore.instance;
+    final goalRef = firestore
+        .collection('family_links')
+        .doc(link.id)
+        .collection('goals')
+        .doc(goalId);
+    final eventRef = firestore
+        .collection('family_links')
+        .doc(link.id)
+        .collection('bond_events')
+        .doc('goal_$goalId');
+    await firestore.runTransaction((transaction) async {
+      final goal = await transaction.get(goalRef);
+      if (!goal.exists || goal.data()?['status'] != 'accepted') return;
+      final now = DateTime.now().toUtc().toIso8601String();
+      transaction.update(goalRef, {
+        'status': 'completed',
+        'completedAt': now,
+        'updatedAt': now,
       });
-    } catch (e) {
-      debugPrint('Failed to decline guardian invite: $e');
+      transaction.set(eventRef, {
+        'schemaVersion': 1,
+        'type': 'goalCompleted',
+        'sourceId': goalId,
+        'actorId': user.id,
+        'points': FamilyBondPolicy.pointsFor(FamilyBondEvent.goalCompleted),
+        'createdAt': now,
+      });
+    });
+  }
+
+  Future<void> acknowledgeFamilyEncouragement(String cardId) async {
+    final link = _familyLink;
+    final user = _currentUser;
+    if (link == null || user == null || user.id != link.childId) return;
+    final firestore = FirebaseFirestore.instance;
+    final cardRef = firestore
+        .collection('family_links')
+        .doc(link.id)
+        .collection('encouragements')
+        .doc(cardId);
+    final eventRef = firestore
+        .collection('family_links')
+        .doc(link.id)
+        .collection('bond_events')
+        .doc('encouragement_$cardId');
+    await firestore.runTransaction((transaction) async {
+      final card = await transaction.get(cardRef);
+      if (!card.exists || card.data()?['status'] == 'acknowledged') return;
+      final now = DateTime.now().toUtc().toIso8601String();
+      transaction.update(cardRef, {
+        'status': 'acknowledged',
+        'acknowledgedAt': now,
+      });
+      transaction.set(eventRef, {
+        'schemaVersion': 1,
+        'type': 'acknowledgement',
+        'sourceId': cardId,
+        'actorId': user.id,
+        'points': FamilyBondPolicy.pointsFor(FamilyBondEvent.acknowledgement),
+        'createdAt': now,
+      });
+    });
+  }
+
+  Future<void> updateFamilyConsent(FamilyConsentScopes consent) async {
+    final link = _familyLink;
+    final user = _currentUser;
+    if (link == null || user == null || user.id != link.childId) return;
+    final firestore = FirebaseFirestore.instance;
+    final linkRef = firestore.collection('family_links').doc(link.id);
+    final summaryRef = linkRef.collection('summaries').doc('current');
+    final batch = firestore.batch();
+    final updatedAt = DateTime.now().toUtc().toIso8601String();
+
+    batch.update(linkRef, {
+      'consentScopes': consent.toMap(),
+      'updatedAt': updatedAt,
+    });
+    batch.set(
+      summaryRef,
+      _buildFamilySummaryPayload(childId: user.id, consent: consent)
+        ..['updatedAt'] = updatedAt,
+    );
+    await batch.commit();
+  }
+
+  void _ensureCurrentGroupChallengeTasks() {
+    final challenge = _groupChallengePublication;
+    final participation = currentGroupChallengeParticipation;
+    final user = _currentUser;
+    if (challenge == null ||
+        participation == null ||
+        user == null ||
+        participation['status'] == 'completed') {
+      return;
     }
+    final challengeId = challenge['challengeId']?.toString() ?? '';
+    final days = (challenge['days'] as num?)?.toInt() ?? 0;
+    if (challengeId.isEmpty || days < 1) return;
+    final missing = GroupChallengeTaskPlan.missingTasks(
+      challengeId: challengeId,
+      groupName: challenge['groupName']?.toString() ?? groupName ?? '自律團體',
+      type: challenge['type']?.toString() ?? '自律挑戰',
+      days: days,
+      existingTasks: _tasks,
+      now: DateTime.now(),
+      userId: user.id,
+    );
+    if (missing.isEmpty) return;
+    _tasks.addAll(missing);
+    _syncTaskRewards();
+    _syncTodaySummary();
+    notifyListeners();
+    _saveTasks();
+  }
+
+  Future<void> _syncCurrentGroupChallengeProgress() async {
+    final challenge = _groupChallengePublication;
+    final participation = currentGroupChallengeParticipation;
+    final group = _canonicalGroup;
+    final user = _currentUser;
+    if (challenge == null ||
+        participation == null ||
+        group == null ||
+        user == null ||
+        participation['status'] == 'completed') {
+      return;
+    }
+    final challengeId = challenge['challengeId']?.toString() ?? '';
+    if (challengeId.isEmpty) return;
+    final completedDays = GroupChallengeTaskPlan.completedDays(
+      challengeId: challengeId,
+      tasks: _tasks,
+    );
+    if ((participation['completedDays'] as num?)?.toInt() == completedDays) {
+      return;
+    }
+    final payload = GroupChallengeParticipationContract.buildProgress(
+      group: group,
+      challenge: challenge,
+      existing: participation,
+      memberId: user.id,
+      completedDays: completedDays,
+      now: DateTime.now(),
+    );
+    await FirebaseFirestore.instance
+        .collection('groups')
+        .doc(group.id)
+        .collection('challenges')
+        .doc('current')
+        .collection('participants')
+        .doc(user.id)
+        .set(payload);
+  }
+
+  void _scheduleCurrentGroupChallengeProgressSync() {
+    if (_groupChallengeProgressSyncInFlight) {
+      _groupChallengeProgressSyncQueued = true;
+      return;
+    }
+    _groupChallengeProgressSyncInFlight = true;
+    unawaited(() async {
+      try {
+        do {
+          _groupChallengeProgressSyncQueued = false;
+          try {
+            await _syncCurrentGroupChallengeProgress();
+          } catch (error) {
+            debugPrint('Failed to sync group challenge progress: $error');
+          }
+        } while (_groupChallengeProgressSyncQueued);
+      } finally {
+        _groupChallengeProgressSyncInFlight = false;
+      }
+    }());
+  }
+
+  /// 成員自行加入目前挑戰；參與紀錄在雲端，任務匯入具冪等性。
+  Future<void> joinGroupChallengeAsTask() async {
+    final challenge = _groupChallengePublication;
+    final group = _canonicalGroup;
+    final user = _currentUser;
+    if (challenge == null || group == null || user == null) {
+      throw StateError('請先加入有效團體並等待挑戰同步');
+    }
+    final existing = currentGroupChallengeParticipation;
+    if (existing == null) {
+      final payload = GroupChallengeParticipationContract.buildJoined(
+        group: group,
+        challenge: challenge,
+        memberId: user.id,
+        now: DateTime.now(),
+      );
+      await FirebaseFirestore.instance
+          .collection('groups')
+          .doc(group.id)
+          .collection('challenges')
+          .doc('current')
+          .collection('participants')
+          .doc(user.id)
+          .set(payload);
+      _groupChallengeParticipations = [
+        ..._groupChallengeParticipations.where(
+          (item) => item['memberId'] != user.id,
+        ),
+        {'id': user.id, ...payload},
+      ];
+    }
+    _ensureCurrentGroupChallengeTasks();
   }
 
   Future<void> removeGuardian() async {
@@ -6437,6 +9008,50 @@ ${summaryBuf.toString()}
       final docRef = FirebaseFirestore.instance
           .collection('users')
           .doc(user.id);
+      final link = _familyLink;
+      if (link != null) {
+        final batch = FirebaseFirestore.instance.batch();
+        final now = DateTime.now().toUtc().toIso8601String();
+        batch.update(
+          FirebaseFirestore.instance.collection('family_links').doc(link.id),
+          {
+            'status': 'ended',
+            'endedBy': user.id,
+            'endedAt': now,
+            'updatedAt': now,
+          },
+        );
+        batch.update(
+          FirebaseFirestore.instance
+              .collection('guardian_requests')
+              .doc(link.id),
+          {'status': 'ended', 'updatedAt': now},
+        );
+        for (final participantId in link.participantIds) {
+          final membership = RelationshipMembership.fromFamilyLink(
+            link: link,
+            userId: participantId,
+          ).copyWith(status: RelationshipMembershipStatus.ended);
+          batch.set(
+            FirebaseFirestore.instance
+                .collection('relationship_memberships')
+                .doc(membership.id),
+            membership.toFirestoreMap(
+              now: DateTime.parse(now),
+              endedBy: user.id,
+            ),
+            SetOptions(merge: true),
+          );
+        }
+        batch.update(docRef, {
+          'webToolsState.guardianInvite': FieldValue.delete(),
+          'webToolsState.guardianInviteStatus': FieldValue.delete(),
+        });
+        await batch.commit();
+        notifyListeners();
+        return;
+      }
+
       await docRef.update({
         'webToolsState.guardianInvite': FieldValue.delete(),
         'webToolsState.guardianInviteStatus': FieldValue.delete(),
@@ -6600,7 +9215,7 @@ ${historyBuffer.toString()}
 4. 回覆請盡量精煉，避免過長的冗長鋪陳，排版清晰美觀，合適地使用 Emoji。
 ''';
 
-      final googleAI = FirebaseAI.googleAI(auth: fb_auth.FirebaseAuth.instance);
+      final googleAI = FirebaseAI.googleAI();
       final model = googleAI.generativeModel(model: 'gemini-flash-latest');
 
       final response = await model.generateContent([Content.text(prompt)]);
@@ -6647,6 +9262,7 @@ ${historyBuffer.toString()}
           'userRole': role,
           'updatedAt': FieldValue.serverTimestamp(),
         });
+        await _syncPublicProfile();
       } catch (e) {
         debugPrint('Failed to update user role in Firestore: $e');
       }
@@ -6655,102 +9271,90 @@ ${historyBuffer.toString()}
 
   Future<void> sendParentEncouragementCard(String title, String message) async {
     final user = _currentUser;
-    if (user == null) return;
-    try {
-      final docRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.id);
-      final newCard = {
-        'title': title,
-        'meta': '剛剛',
-        'message': message,
-        'createdAt': DateTime.now().toIso8601String(),
-      };
-      final updated = [newCard, ...guardianEncouragements];
-      await docRef.update({
-        'webToolsCollection.encouragements': updated,
-        'webToolsCollection.encouragementsUpdatedAt': DateTime.now()
-            .toIso8601String(),
-      });
-    } catch (e) {
-      debugPrint('Failed to send encouragement card: $e');
+    final link = _familyLink;
+    if (user == null || link == null || user.id != link.guardianId) {
+      throw StateError('請先以家長身分建立有效的家庭連結');
     }
+    final payload = FamilyLinkContract.buildEncouragementPayload(
+      guardianId: link.guardianId,
+      childId: link.childId,
+      title: title,
+      message: message,
+      now: DateTime.now(),
+    );
+    await FirebaseFirestore.instance
+        .collection('family_links')
+        .doc(link.id)
+        .collection('encouragements')
+        .add(payload);
   }
 
-  Future<void> sendParentSharedGoal(
-    String goal,
-    String permission,
-    String message,
-  ) async {
+  Future<void> sendParentSharedGoal(String goal, String message) async {
     final user = _currentUser;
-    if (user == null) return;
-    try {
-      final docRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.id);
-      await docRef.update({
-        'webToolsState.guardianInvite': {
-          'goal': goal,
-          'permission': permission,
-          'message': message,
-        },
-        'webToolsState.guardianInviteStatus': {
-          'status': 'pending_child_approval',
-          'updatedAt': DateTime.now().toIso8601String(),
-        },
-      });
-    } catch (e) {
-      debugPrint('Failed to send shared goal: $e');
+    final link = _familyLink;
+    if (user == null || link == null || user.id != link.guardianId) {
+      throw StateError('請先以家長身分建立有效的家庭連結');
     }
+    final payload = FamilyLinkContract.buildSharedGoalPayload(
+      guardianId: link.guardianId,
+      childId: link.childId,
+      title: goal,
+      message: message,
+      now: DateTime.now(),
+    );
+    await FirebaseFirestore.instance
+        .collection('family_links')
+        .doc(link.id)
+        .collection('goals')
+        .add(payload);
   }
 
   Future<void> publishGroupChallenge(
-    String groupName,
     String type,
     int days,
     String reward,
   ) async {
     final user = _currentUser;
-    if (user == null) return;
-    try {
-      final docRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.id);
-      await docRef.update({
-        'webToolsState.challenge': {
-          'group': groupName,
-          'type': type,
-          'days': days,
-          'reward': reward,
-          'updatedAt': DateTime.now().toIso8601String(),
-        },
-      });
-    } catch (e) {
-      debugPrint('Failed to publish group challenge: $e');
+    final group = _canonicalGroup;
+    if (user == null || group == null) {
+      throw StateError('請先加入有效團體');
     }
+    final now = DateTime.now();
+    final payload = GroupPublicationContract.buildChallenge(
+      group: group,
+      publisherId: user.id,
+      challengeId: 'challenge_${now.toUtc().microsecondsSinceEpoch}',
+      type: type,
+      days: days,
+      reward: reward,
+      now: now,
+    );
+    await FirebaseFirestore.instance
+        .collection('groups')
+        .doc(group.id)
+        .collection('challenges')
+        .doc('current')
+        .set(payload);
   }
 
   Future<void> publishStudySchedule(String title, String meta) async {
     final user = _currentUser;
-    if (user == null) return;
-    try {
-      final docRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.id);
-      final newSchedule = {
-        'title': title,
-        'meta': meta,
-        'createdAt': DateTime.now().toIso8601String(),
-      };
-      final updated = [newSchedule, ...studySchedules];
-      await docRef.update({
-        'webToolsCollection.studySchedules': updated,
-        'webToolsCollection.studySchedulesUpdatedAt': DateTime.now()
-            .toIso8601String(),
-      });
-    } catch (e) {
-      debugPrint('Failed to publish study schedule: $e');
+    final group = _canonicalGroup;
+    if (user == null || group == null) {
+      throw StateError('請先加入有效團體');
     }
+    final payload = GroupPublicationContract.buildStudySchedule(
+      group: group,
+      publisherId: user.id,
+      title: title,
+      meta: meta,
+      now: DateTime.now(),
+    );
+    await FirebaseFirestore.instance
+        .collection('groups')
+        .doc(group.id)
+        .collection('study_schedules')
+        .add(payload);
   }
 
   Future<void> publishExamTemplate(
@@ -6760,23 +9364,167 @@ ${historyBuffer.toString()}
     String strategy,
   ) async {
     final user = _currentUser;
-    if (user == null) return;
-    try {
-      final docRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.id);
-      await docRef.update({
-        'webToolsState.template': {
-          'type': type,
-          'days': days,
-          'effort': effort,
-          'pressure': strategy,
-          'updatedAt': DateTime.now().toIso8601String(),
-        },
-      });
-    } catch (e) {
-      debugPrint('Failed to publish exam template: $e');
+    final group = _canonicalGroup;
+    if (user == null || group == null) {
+      throw StateError('請先加入有效團體');
     }
+    final payload = GroupPublicationContract.buildTemplate(
+      group: group,
+      publisherId: user.id,
+      type: type,
+      days: days,
+      effort: effort,
+      strategy: strategy,
+      now: DateTime.now(),
+    );
+    await FirebaseFirestore.instance
+        .collection('groups')
+        .doc(group.id)
+        .collection('templates')
+        .add(payload);
+  }
+
+  Future<void> setGroupResultSharing(bool enabled) async {
+    final group = _canonicalGroup;
+    final user = _currentUser;
+    if (group == null || user == null || !group.isMember(user.id)) {
+      throw StateError('請先加入有效團體');
+    }
+    final summaryRef = FirebaseFirestore.instance
+        .collection('groups')
+        .doc(group.id)
+        .collection('member_summaries')
+        .doc(user.id);
+    _groupResultSummaryPublishTimer?.cancel();
+    _groupResultSummaryPublishTimer = null;
+
+    if (!enabled) {
+      await summaryRef.delete();
+      _groupResultSharingEnabled = false;
+      _groupMemberSummaries = _groupMemberSummaries
+          .where((summary) => summary.memberId != user.id)
+          .toList(growable: false);
+      notifyListeners();
+      return;
+    }
+
+    final payload = GroupResultSummaryContract.buildPayload(
+      group: group,
+      memberId: user.id,
+      displayName: _profileNickname,
+      disciplineScore: todayWeightedDisciplineScore,
+      completedTasks: todayActionableTaskCompleted,
+      totalTasks: todayActionableTaskTotal,
+      focusMinutes: focusMinutes,
+      steps: steps,
+      sleepHours: sleepHours,
+      now: DateTime.now(),
+    );
+    await summaryRef.set(payload);
+    _groupResultSharingEnabled = true;
+    notifyListeners();
+  }
+
+  Future<void> refreshGroupResultSummary() async {
+    if (!_groupResultSharingEnabled) {
+      throw StateError('請先開啟團體成果分享');
+    }
+    await _publishGroupResultSummarySnapshot();
+  }
+
+  Future<void> removeGroupMember(String memberId) async {
+    final user = _currentUser;
+    final group = _canonicalGroup;
+    if (user == null || group == null || !group.isManager(user.id)) {
+      throw StateError('只有目前團體管理者可以移除成員');
+    }
+    final firestore = FirebaseFirestore.instance;
+    final groupRef = firestore.collection('groups').doc(group.id);
+    final summaryRef = groupRef.collection('member_summaries').doc(memberId);
+    final participationRef = groupRef
+        .collection('challenges')
+        .doc('current')
+        .collection('participants')
+        .doc(memberId);
+    await firestore.runTransaction((transaction) async {
+      final groupSnapshot = await transaction.get(groupRef);
+      if (!groupSnapshot.exists) {
+        throw StateError('團體資料不存在');
+      }
+      final currentGroup = GroupContract.fromMap(
+        groupSnapshot.id,
+        groupSnapshot.data()!,
+      );
+      final update = GroupMembershipContract.buildMemberRemoval(
+        group: currentGroup,
+        managerId: user.id,
+        memberId: memberId,
+        now: DateTime.now(),
+      );
+      final endedMembership = RelationshipMembership.fromGroup(
+        group: currentGroup,
+        userId: memberId,
+      ).copyWith(status: RelationshipMembershipStatus.ended);
+      transaction.update(groupRef, update);
+      transaction.set(
+        firestore
+            .collection('relationship_memberships')
+            .doc(endedMembership.id),
+        endedMembership.toFirestoreMap(now: DateTime.now(), endedBy: user.id),
+        SetOptions(merge: true),
+      );
+      transaction.delete(summaryRef);
+      transaction.delete(participationRef);
+    });
+  }
+
+  Future<void> transferGroupOwnership(String nextManagerId) async {
+    final user = _currentUser;
+    final group = _canonicalGroup;
+    if (user == null || group == null || !group.isManager(user.id)) {
+      throw StateError('只有目前團體管理者可以轉移管理權');
+    }
+    final firestore = FirebaseFirestore.instance;
+    final groupRef = firestore.collection('groups').doc(group.id);
+    await firestore.runTransaction((transaction) async {
+      final groupSnapshot = await transaction.get(groupRef);
+      if (!groupSnapshot.exists) {
+        throw StateError('團體資料不存在');
+      }
+      final currentGroup = GroupContract.fromMap(
+        groupSnapshot.id,
+        groupSnapshot.data()!,
+      );
+      final update = GroupMembershipContract.buildOwnershipTransfer(
+        group: currentGroup,
+        managerId: user.id,
+        nextManagerId: nextManagerId,
+        now: DateTime.now(),
+      );
+      final currentManagerMembership = RelationshipMembership.fromGroup(
+        group: currentGroup,
+        userId: user.id,
+      ).copyWith(role: RelationshipRole.member);
+      final nextManagerMembership = RelationshipMembership.fromGroup(
+        group: currentGroup,
+        userId: nextManagerId,
+      ).copyWith(role: RelationshipRole.manager);
+      transaction.update(groupRef, update);
+      transaction.set(
+        firestore
+            .collection('relationship_memberships')
+            .doc(currentManagerMembership.id),
+        currentManagerMembership.toFirestoreMap(now: DateTime.now()),
+        SetOptions(merge: true),
+      );
+      transaction.set(
+        firestore
+            .collection('relationship_memberships')
+            .doc(nextManagerMembership.id),
+        nextManagerMembership.toFirestoreMap(now: DateTime.now()),
+        SetOptions(merge: true),
+      );
+    });
   }
 
   /// 進行家長/小孩帳號雙向連結綁定
@@ -6798,7 +9546,7 @@ ${historyBuffer.toString()}
     try {
       // Find the user by username
       final querySnap = await FirebaseFirestore.instance
-          .collection('users')
+          .collection('public_profiles')
           .where('username', isEqualTo: targetNudgeIdUpper)
           .limit(1)
           .get();
@@ -6806,13 +9554,23 @@ ${historyBuffer.toString()}
         throw Exception('找不到該 Nudge ID 的使用者');
       }
       final receiverId = querySnap.docs.first.id;
-      final receiverNudgeId =
-          querySnap.docs.first.data()['username'] as String? ?? '';
+      final receiverData = querySnap.docs.first.data();
+      final receiverNudgeId = receiverData['username'] as String? ?? '';
+      final receiverRole = receiverData['familyRole'] as String? ?? 'personal';
 
-      // Check if they are already linked with us
-      if (isGuardianLinked &&
-          guardianInvite?['relativeId'] == receiverNudgeId) {
-        throw Exception('雙方已處於綁定狀態');
+      FamilyLinkContract.fromAcceptedRequest(
+        linkId: 'validation',
+        senderId: user.id,
+        senderRole: _userRole,
+        receiverId: receiverId,
+        receiverRole: receiverRole,
+        now: DateTime.now(),
+      );
+
+      if (_familyLinks.any(
+        (link) => link.participantIds.contains(receiverId),
+      )) {
+        throw Exception('你們已經有有效的家庭連結');
       }
 
       // Check if there is already a pending request between us (outgoing)
@@ -6847,6 +9605,7 @@ ${historyBuffer.toString()}
         'senderRole': _userRole,
         'receiverId': receiverId,
         'receiverNudgeId': receiverNudgeId,
+        'receiverRole': receiverRole,
         'status': 'pending',
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
@@ -6862,13 +9621,45 @@ ${historyBuffer.toString()}
     final user = _currentUser;
     if (user == null) return;
     try {
-      await FirebaseFirestore.instance
+      final firestore = FirebaseFirestore.instance;
+      final requestRef = firestore
           .collection('guardian_requests')
-          .doc(requestId)
-          .update({
-            'status': 'accepted',
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
+          .doc(requestId);
+      final linkRef = firestore.collection('family_links').doc(requestId);
+      await firestore.runTransaction((transaction) async {
+        final requestSnapshot = await transaction.get(requestRef);
+        if (!requestSnapshot.exists) {
+          throw StateError('找不到親屬綁定申請');
+        }
+        final request = requestSnapshot.data()!;
+        if (request['receiverId'] != user.id) {
+          throw StateError('只有邀請接收者可以同意連結');
+        }
+
+        final contract = FamilyLinkContract.fromAcceptedRequest(
+          linkId: requestId,
+          senderId: request['senderId'] as String,
+          senderRole: request['senderRole'] as String? ?? 'personal',
+          receiverId: request['receiverId'] as String,
+          receiverRole: request['receiverRole'] as String? ?? _userRole,
+          now: DateTime.now(),
+        );
+        transaction.update(requestRef, {
+          'status': 'accepted',
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        transaction.set(linkRef, contract.toMap());
+        for (final participantId in contract.participantIds) {
+          final membership = RelationshipMembership.fromFamilyLink(
+            link: contract,
+            userId: participantId,
+          );
+          transaction.set(
+            firestore.collection('relationship_memberships').doc(membership.id),
+            membership.toFirestoreMap(now: DateTime.now()),
+          );
+        }
+      });
       notifyListeners();
     } catch (e) {
       debugPrint('Failed to approve guardian request: $e');
@@ -6893,143 +9684,298 @@ ${historyBuffer.toString()}
     }
   }
 
-  /// 創建新團體 (房主身份，生成唯一團體 ID)
-  Future<void> createGroup(String name) async {
-    final randomId = 'GRP-${DateTime.now().millisecondsSinceEpoch % 100000}';
-    _groupId = randomId;
-    _groupName = name;
-    _isGroupOwner = true;
-    notifyListeners();
+  Future<void> approveGroupRequest(Map<String, dynamic> request) async {
+    final requestId = request['id'] as String?;
+    final requestedGroupId = request['groupId'] as String?;
+    if (requestId == null || requestedGroupId == null) {
+      throw StateError('團體邀請資料不完整');
+    }
+    await joinGroup(requestedGroupId, requestId: requestId);
+  }
 
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('group_id_setting', randomId);
-    await prefs.setString('group_name_setting', name);
-    await prefs.setBool('is_group_owner_setting', true);
-
-    final user = _currentUser;
-    if (user != null) {
-      try {
-        final docRef = FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.id);
-        await docRef.update({
-          'groupId': randomId,
-          'groupName': name,
-          'isGroupOwner': true,
+  Future<void> declineGroupRequest(String requestId) async {
+    await FirebaseFirestore.instance
+        .collection('group_requests')
+        .doc(requestId)
+        .update({
+          'status': 'declined',
           'updatedAt': FieldValue.serverTimestamp(),
         });
-      } catch (e) {
-        debugPrint('Failed to sync created group to firestore: $e');
-      }
+  }
+
+  Future<void> _migrateLegacyGroupProjection(
+    String ownerId,
+    String legacyGroupId,
+    String legacyGroupName,
+  ) async {
+    if (!_checkedLegacyGroupIds.add(legacyGroupId)) return;
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final groupRef = firestore.collection('groups').doc(legacyGroupId);
+      final groupSnapshot = await groupRef.get();
+      if (groupSnapshot.exists) return;
+      final group = GroupContract(
+        id: legacyGroupId,
+        name: legacyGroupName,
+        ownerId: ownerId,
+        memberIds: {ownerId},
+        status: GroupStatus.active,
+      );
+      final membership = RelationshipMembership.fromGroup(
+        group: group,
+        userId: ownerId,
+      );
+      final batch = firestore.batch();
+      batch.set(groupRef, {
+        'id': legacyGroupId,
+        'name': legacyGroupName,
+        'ownerId': ownerId,
+        'memberIds': [ownerId],
+        'status': 'active',
+        'migratedFromUserProjection': true,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      batch.set(
+        firestore.collection('relationship_memberships').doc(membership.id),
+        membership.toFirestoreMap(now: DateTime.now()),
+      );
+      await batch.commit();
+    } catch (error) {
+      _checkedLegacyGroupIds.remove(legacyGroupId);
+      debugPrint('Failed to migrate legacy group: $error');
     }
   }
 
-  /// 加入已有的團體 (成員身份)
-  Future<void> joinGroup(String groupIdInput) async {
-    _groupId = groupIdInput;
-    _groupName = '自律小組';
-    _isGroupOwner = false;
-    notifyListeners();
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('group_id_setting', groupIdInput);
-    await prefs.setString('group_name_setting', '自律小組');
-    await prefs.setBool('is_group_owner_setting', false);
-
-    final user = _currentUser;
-    if (user != null) {
-      try {
-        final docRef = FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.id);
-        await docRef.update({
-          'groupId': groupIdInput,
-          'groupName': '自律小組',
-          'isGroupOwner': false,
+  Future<void> _ensureCanonicalGroupMembership(
+    String userId,
+    String existingGroupId,
+  ) async {
+    try {
+      final groupRef = FirebaseFirestore.instance
+          .collection('groups')
+          .doc(existingGroupId);
+      final groupSnapshot = await groupRef.get();
+      if (!groupSnapshot.exists ||
+          groupSnapshot.data()?['status'] != 'active') {
+        return;
+      }
+      final memberIds = List<String>.from(
+        groupSnapshot.data()?['memberIds'] as List? ?? const [],
+      );
+      final group = GroupContract.fromMap(
+        groupSnapshot.id,
+        groupSnapshot.data()!,
+      );
+      final membership = RelationshipMembership.fromGroup(
+        group: group.memberIds.contains(userId)
+            ? group
+            : GroupContract(
+                id: group.id,
+                name: group.name,
+                ownerId: group.ownerId,
+                memberIds: {...group.memberIds, userId},
+                status: group.status,
+              ),
+        userId: userId,
+      );
+      final batch = FirebaseFirestore.instance.batch();
+      if (!memberIds.contains(userId)) {
+        batch.update(groupRef, {
+          'memberIds': FieldValue.arrayUnion([userId]),
           'updatedAt': FieldValue.serverTimestamp(),
         });
-      } catch (e) {
-        debugPrint('Failed to sync joined group to firestore: $e');
       }
+      batch.set(
+        FirebaseFirestore.instance
+            .collection('relationship_memberships')
+            .doc(membership.id),
+        membership.toFirestoreMap(now: DateTime.now()),
+        SetOptions(merge: true),
+      );
+      await batch.commit();
+    } catch (error) {
+      debugPrint('Failed to repair group membership: $error');
     }
+  }
+
+  /// 創建新團體 (房主身份，生成唯一團體 ID)
+  Future<void> createGroup(String name) async {
+    final user = _currentUser;
+    if (user == null) throw StateError('請先登入再建立團體');
+    final normalizedName = name.trim();
+    if (normalizedName.isEmpty) throw ArgumentError('團體名稱不可空白');
+
+    final randomId =
+        'GRP-${DateTime.now().millisecondsSinceEpoch.toRadixString(36).toUpperCase()}';
+    final firestore = FirebaseFirestore.instance;
+    final groupRef = firestore.collection('groups').doc(randomId);
+    final membership = RelationshipMembership.fromGroup(
+      group: GroupContract(
+        id: randomId,
+        name: normalizedName,
+        ownerId: user.id,
+        memberIds: {user.id},
+        status: GroupStatus.active,
+      ),
+      userId: user.id,
+    );
+    final batch = firestore.batch();
+    batch.set(groupRef, {
+      'id': randomId,
+      'name': normalizedName,
+      'ownerId': user.id,
+      'memberIds': [user.id],
+      'status': 'active',
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+    batch.set(
+      firestore.collection('relationship_memberships').doc(membership.id),
+      membership.toFirestoreMap(now: DateTime.now()),
+    );
+    await batch.commit();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _relationshipSelectionKey('group', user.id),
+      randomId,
+    );
+    _selectedGroupId = randomId;
+    _groupId = randomId;
+    _groupName = normalizedName;
+    notifyListeners();
+  }
+
+  /// 加入已有的團體 (成員身份)
+  Future<void> joinGroup(String groupIdInput, {String? requestId}) async {
+    final user = _currentUser;
+    if (user == null) throw StateError('請先登入再加入團體');
+    final normalizedId = groupIdInput.trim().toUpperCase();
+    if (normalizedId.isEmpty) throw ArgumentError('團體 ID 不可空白');
+
+    final firestore = FirebaseFirestore.instance;
+    final groupRef = firestore.collection('groups').doc(normalizedId);
+    late String remoteGroupName;
+    await firestore.runTransaction((transaction) async {
+      final groupSnapshot = await transaction.get(groupRef);
+      if (!groupSnapshot.exists) throw StateError('找不到此團體 ID');
+      final data = groupSnapshot.data() ?? const <String, dynamic>{};
+      if (data['status'] != 'active') throw StateError('此團體目前無法加入');
+      remoteGroupName = (data['name'] as String?)?.trim() ?? '';
+      if (remoteGroupName.isEmpty) throw StateError('團體資料不完整');
+      final ownerId = (data['ownerId'] as String?)?.trim() ?? '';
+      if (ownerId.isEmpty) throw StateError('團體管理者資料不完整');
+      final joinedGroup = GroupContract(
+        id: normalizedId,
+        name: remoteGroupName,
+        ownerId: ownerId,
+        memberIds: {
+          ...List<String>.from(data['memberIds'] as List? ?? const []),
+          user.id,
+        },
+        status: GroupStatus.active,
+      );
+      final membership = RelationshipMembership.fromGroup(
+        group: joinedGroup,
+        userId: user.id,
+      );
+      transaction.update(groupRef, {
+        'memberIds': FieldValue.arrayUnion([user.id]),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      transaction.set(
+        firestore.collection('relationship_memberships').doc(membership.id),
+        membership.toFirestoreMap(now: DateTime.now()),
+        SetOptions(merge: true),
+      );
+      if (requestId != null) {
+        transaction.update(
+          firestore.collection('group_requests').doc(requestId),
+          {'status': 'accepted', 'updatedAt': FieldValue.serverTimestamp()},
+        );
+      }
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _relationshipSelectionKey('group', user.id),
+      normalizedId,
+    );
+    _selectedGroupId = normalizedId;
+    _groupId = normalizedId;
+    _groupName = remoteGroupName;
+    notifyListeners();
   }
 
   /// 退出或解散當前團體
   Future<void> leaveGroup() async {
-    _groupId = null;
-    _groupName = null;
-    _isGroupOwner = false;
-    notifyListeners();
+    final user = _currentUser;
+    final currentGroup = _canonicalGroup;
+    if (user == null) throw StateError('請先登入');
+    if (currentGroup == null) return;
+    final currentGroupId = currentGroup.id;
+    final remainingGroups = _canonicalGroups
+        .where((group) => group.id != currentGroupId)
+        .toList(growable: false);
+    final fallbackGroup = remainingGroups.isEmpty
+        ? null
+        : remainingGroups.first;
+
+    final firestore = FirebaseFirestore.instance;
+    final groupRef = firestore.collection('groups').doc(currentGroupId);
+    final summaryRef = groupRef.collection('member_summaries').doc(user.id);
+    final participationRef = groupRef
+        .collection('challenges')
+        .doc('current')
+        .collection('participants')
+        .doc(user.id);
+    await firestore.runTransaction((transaction) async {
+      final groupSnapshot = await transaction.get(groupRef);
+      if (groupSnapshot.exists) {
+        final data = groupSnapshot.data() ?? const <String, dynamic>{};
+        final ownerId = data['ownerId'] as String?;
+        final memberIds = List<String>.from(
+          data['memberIds'] as List? ?? const [],
+        );
+        if (ownerId == user.id && memberIds.length > 1) {
+          throw StateError('團體仍有其他成員，請先移除成員或轉移管理權');
+        }
+        if (ownerId == user.id) {
+          transaction.delete(groupRef);
+        } else {
+          transaction.update(groupRef, {
+            'memberIds': FieldValue.arrayRemove([user.id]),
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        }
+        final membership = RelationshipMembership.fromGroup(
+          group: GroupContract.fromMap(groupSnapshot.id, data),
+          userId: user.id,
+        ).copyWith(status: RelationshipMembershipStatus.ended);
+        transaction.set(
+          firestore.collection('relationship_memberships').doc(membership.id),
+          membership.toFirestoreMap(now: DateTime.now(), endedBy: user.id),
+          SetOptions(merge: true),
+        );
+      }
+      transaction.delete(summaryRef);
+      transaction.delete(participationRef);
+    });
 
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('group_id_setting');
-    await prefs.remove('group_name_setting');
-    await prefs.remove('is_group_owner_setting');
-
-    final user = _currentUser;
-    if (user != null) {
-      try {
-        final docRef = FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.id);
-        await docRef.update({
-          'groupId': FieldValue.delete(),
-          'groupName': FieldValue.delete(),
-          'isGroupOwner': FieldValue.delete(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
-      } catch (e) {
-        debugPrint('Failed to sync leave group to firestore: $e');
-      }
+    if (fallbackGroup == null) {
+      await prefs.remove(_relationshipSelectionKey('group', user.id));
+    } else {
+      await prefs.setString(
+        _relationshipSelectionKey('group', user.id),
+        fallbackGroup.id,
+      );
     }
-  }
 
-  void _setupGroupOwnerListener(String myUid, String groupId) {
-    if (_groupOwnerSubscription != null) return;
-    _groupOwnerSubscription = FirebaseFirestore.instance
-        .collection('users')
-        .where('groupId', isEqualTo: groupId)
-        .where('isGroupOwner', isEqualTo: true)
-        .limit(1)
-        .snapshots()
-        .listen(
-          (snapshot) {
-            if (snapshot.docs.isNotEmpty) {
-              final ownerData = snapshot.docs.first.data();
-              bool changed = false;
-              if (ownerData['webToolsState'] != null) {
-                final ownerState = Map<String, dynamic>.from(
-                  ownerData['webToolsState'] as Map,
-                );
-                _webToolsState ??= {};
-                if (ownerState['challenge'] != null) {
-                  _webToolsState!['challenge'] = ownerState['challenge'];
-                  changed = true;
-                }
-                if (ownerState['template'] != null) {
-                  _webToolsState!['template'] = ownerState['template'];
-                  changed = true;
-                }
-              }
-              if (ownerData['webToolsCollection'] != null) {
-                final ownerCollection = Map<String, dynamic>.from(
-                  ownerData['webToolsCollection'] as Map,
-                );
-                _webToolsCollection ??= {};
-                if (ownerCollection['studySchedules'] != null) {
-                  _webToolsCollection!['studySchedules'] =
-                      ownerCollection['studySchedules'];
-                  changed = true;
-                }
-              }
-              if (changed) {
-                notifyListeners();
-              }
-            }
-          },
-          onError: (e) {
-            debugPrint('Error listening to group owner: $e');
-          },
-        );
+    _selectedGroupId = fallbackGroup?.id;
+    _groupId = fallbackGroup?.id;
+    _groupName = fallbackGroup?.name;
+    notifyListeners();
   }
 }

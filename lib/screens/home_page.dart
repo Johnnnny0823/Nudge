@@ -41,6 +41,7 @@ class HomePage extends StatelessWidget {
   Widget build(BuildContext context) {
     final appState = context.watch<AppState>();
     final accentColor = appState.currentIconColor;
+    final capabilities = appState.experienceCapabilities;
 
     final completedCount = appState.todayActionableTaskCompleted;
     final totalTasks = appState.todayActionableTaskTotal;
@@ -49,7 +50,7 @@ class HomePage extends StatelessWidget {
     final primaryText = AppUI.textPrimaryOf(context);
     final secondaryText = AppUI.textSecondaryOf(context);
     final isDark = AppUI.isDark(context);
-    
+
     void openTasksPage() {
       Navigator.push(
         context,
@@ -62,8 +63,8 @@ class HomePage extends StatelessWidget {
     bool isGated = false;
     Widget? gateCard;
 
-    if (appState.userRole == 'guardian') {
-      if (!appState.isGuardianLinked) {
+    if (capabilities.isGuardian) {
+      if (capabilities.requiresFamilyBinding) {
         isGated = true;
         gateCard = _BindingGatedCard(
           appState: appState,
@@ -76,8 +77,8 @@ class HomePage extends StatelessWidget {
           accentColor: accentColor,
         );
       }
-    } else if (appState.userRole == 'child') {
-      if (!appState.isGuardianLinked) {
+    } else if (capabilities.isChild) {
+      if (capabilities.requiresFamilyBinding) {
         isGated = true;
         gateCard = _BindingGatedCard(
           appState: appState,
@@ -90,11 +91,8 @@ class HomePage extends StatelessWidget {
           accentColor: accentColor,
         );
       }
-    } else if (appState.userRole == 'group' ||
-               appState.userRole == 'enterprise' ||
-               appState.userRole == 'tutor' ||
-               appState.userRole == 'school') {
-      if (appState.groupId == null) {
+    } else if (capabilities.isGroupExperience) {
+      if (capabilities.requiresGroupBinding) {
         isGated = true;
         gateCard = _GroupBindingGatedCard(
           appState: appState,
@@ -124,11 +122,7 @@ class HomePage extends StatelessWidget {
       backgroundColor: AppUI.scaffoldBackgroundOf(context),
       drawer: AppDrawer(onOpenTasks: openTasksPage),
       appBar: AppBar(
-        title: Text(appState.userRole == 'guardian'
-            ? '家長陪伴端'
-            : (appState.userRole == 'child'
-                ? '孩子端'
-                : (appState.userRole == 'group' ? '自律團體端' : '個人首頁'))),
+        title: Text(capabilities.homeTitle),
         actions: [
           Center(
             child: _PlanetPill(
@@ -137,7 +131,9 @@ class HomePage extends StatelessWidget {
               onTap: () {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: Text('您已在 Web 端解鎖了 ${appState.planetCount} 顆自律星球！'),
+                    content: Text(
+                      '您已在 Web 端解鎖了 ${appState.planetCount} 顆自律星球！',
+                    ),
                     behavior: SnackBarBehavior.floating,
                   ),
                 );
@@ -155,7 +151,8 @@ class HomePage extends StatelessWidget {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) => CoinWalletPage(onOpenTasks: openTasksPage),
+                      builder: (_) =>
+                          CoinWalletPage(onOpenTasks: openTasksPage),
                     ),
                   );
                 },
@@ -172,16 +169,20 @@ class HomePage extends StatelessWidget {
           24,
         ),
         children: isGated
-            ? [
-                const SizedBox(height: 16),
-                gateCard!,
-              ]
+            ? [const SizedBox(height: 16), gateCard!]
             : [
+                if (appState.incomingGroupRequests.isNotEmpty) ...[
+                  _GroupBindingGatedCard(
+                    appState: appState,
+                    accentColor: accentColor,
+                  ),
+                  const SizedBox(height: AppUI.sectionGap),
+                ],
                 heroCard!,
                 const SizedBox(height: AppUI.sectionGap),
-                
+
                 // Show action center only if not guardian mode (guardian has separate dashboard metrics)
-                if (appState.userRole != 'guardian') ...[
+                if (!capabilities.isGuardian) ...[
                   _TodayActionCenter(
                     completedCount: completedCount,
                     totalTasks: totalTasks,
@@ -192,7 +193,9 @@ class HomePage extends StatelessWidget {
                     onOpenData: () {
                       Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => const TodayDataPage()),
+                        MaterialPageRoute(
+                          builder: (_) => const TodayDataPage(),
+                        ),
                       );
                     },
                   ),
@@ -204,33 +207,21 @@ class HomePage extends StatelessWidget {
                 LayoutBuilder(
                   builder: (context, constraints) {
                     final width = constraints.maxWidth;
-                    
+
                     // Filter quick action cards based on active role
                     final List<Widget> actionCards = [];
 
-                    if (appState.userRole == 'guardian') {
+                    if (capabilities.isGuardian) {
                       actionCards.addAll([
                         _QuickActionCard(
-                          icon: Icons.family_restroom_rounded,
-                          title: '家長陪伴中心',
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(builder: (_) => const GuardianCenterPage()),
-                            );
-                          },
-                          accentColor: accentColor,
-                          primaryText: primaryText,
-                          secondaryText: secondaryText,
-                          isDark: isDark,
-                        ),
-                        _QuickActionCard(
                           icon: Icons.favorite_outline,
-                          title: '鼓勵發送',
+                          title: '家庭陪伴與鼓勵',
                           onTap: () {
                             Navigator.push(
                               context,
-                              MaterialPageRoute(builder: (_) => const GuardianParentPage()),
+                              MaterialPageRoute(
+                                builder: (_) => const GuardianParentPage(),
+                              ),
                             );
                           },
                           accentColor: accentColor,
@@ -248,18 +239,42 @@ class HomePage extends StatelessWidget {
                           isDark: isDark,
                         ),
                       ]);
-                    } else if (appState.userRole == 'group' ||
-                               appState.userRole == 'enterprise' ||
-                               appState.userRole == 'tutor' ||
-                               appState.userRole == 'school') {
-                      actionCards.addAll([
+                    }
+
+                    if (capabilities.canManageOwnFamilyLink) {
+                      actionCards.add(
                         _QuickActionCard(
-                          icon: Icons.admin_panel_settings_outlined,
-                          title: '教育管理中心',
+                          icon: Icons.family_restroom_rounded,
+                          title: '家庭連結與隱私',
                           onTap: () {
                             Navigator.push(
                               context,
-                              MaterialPageRoute(builder: (_) => const GroupManagementPage()),
+                              MaterialPageRoute(
+                                builder: (_) => const GuardianCenterPage(),
+                              ),
+                            );
+                          },
+                          accentColor: accentColor,
+                          primaryText: primaryText,
+                          secondaryText: secondaryText,
+                          isDark: isDark,
+                        ),
+                      );
+                    }
+
+                    if (capabilities.canParticipateInGroup) {
+                      actionCards.addAll([
+                        _QuickActionCard(
+                          icon: capabilities.canManageGroup
+                              ? Icons.admin_panel_settings_outlined
+                              : Icons.groups_2_outlined,
+                          title: capabilities.groupSurfaceTitle,
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const GroupManagementPage(),
+                              ),
                             );
                           },
                           accentColor: accentColor,
@@ -277,8 +292,11 @@ class HomePage extends StatelessWidget {
                           isDark: isDark,
                         ),
                       ]);
-                    } else {
-                      // Default personal tools
+                    }
+
+                    if (capabilities.showsPersonalTools) {
+                      // Group participation augments personal self-discipline;
+                      // it never replaces the member's own tools.
                       actionCards.addAll([
                         _QuickActionCard(
                           icon: Icons.analytics_outlined,
@@ -1049,11 +1067,7 @@ class _PlanetPill extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                Icons.language,
-                color: accentColor,
-                size: 17,
-              ),
+              Icon(Icons.language, color: accentColor, size: 17),
               const SizedBox(width: 5),
               Text(
                 '$planetCount',
@@ -1204,13 +1218,21 @@ class _BindingGatedCardState extends State<_BindingGatedCard> {
               isGuardian
                   ? '為了使用孩子專注、睡眠與健康數據牆，請與孩子帳號進行親屬綁定。請在下方輸入您孩子的 Nudge ID 發送申請，或同意對方的申請：'
                   : '您可以與家長進行帳號連結，共同建立自律目標並接收溫暖的鼓勵卡！請在下方輸入您家長的 Nudge ID 發送申請，或同意對方的申請：',
-              style: TextStyle(color: secondaryText, fontSize: 13, height: 1.45),
+              style: TextStyle(
+                color: secondaryText,
+                fontSize: 13,
+                height: 1.45,
+              ),
             ),
             if (incomingReqs.isNotEmpty) ...[
               const SizedBox(height: 16),
               Text(
                 '收到待處理的綁定申請：',
-                style: TextStyle(color: primaryText, fontWeight: FontWeight.bold, fontSize: 13),
+                style: TextStyle(
+                  color: primaryText,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
               ),
               const SizedBox(height: 8),
               ...incomingReqs.map((req) {
@@ -1219,11 +1241,16 @@ class _BindingGatedCardState extends State<_BindingGatedCard> {
                 final nudgeId = req['senderNudgeId'] as String? ?? '';
                 return Container(
                   margin: const EdgeInsets.only(bottom: 8),
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
                   decoration: BoxDecoration(
                     color: widget.accentColor.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: widget.accentColor.withValues(alpha: 0.15)),
+                    border: Border.all(
+                      color: widget.accentColor.withValues(alpha: 0.15),
+                    ),
                   ),
                   child: Row(
                     children: [
@@ -1238,15 +1265,22 @@ class _BindingGatedCardState extends State<_BindingGatedCard> {
                           final messenger = ScaffoldMessenger.of(context);
                           try {
                             await widget.appState.approveGuardianRequest(reqId);
-                            messenger.showSnackBar(const SnackBar(content: Text('已成功同意並建立親屬綁定！ 🎉')));
+                            messenger.showSnackBar(
+                              const SnackBar(content: Text('已成功同意並建立親屬綁定！ 🎉')),
+                            );
                           } catch (e) {
-                            messenger.showSnackBar(SnackBar(content: Text('同意失敗: $e')));
+                            messenger.showSnackBar(
+                              SnackBar(content: Text('同意失敗: $e')),
+                            );
                           }
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.green,
                           foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
                           minimumSize: Size.zero,
                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         ),
@@ -1258,15 +1292,22 @@ class _BindingGatedCardState extends State<_BindingGatedCard> {
                           final messenger = ScaffoldMessenger.of(context);
                           try {
                             await widget.appState.declineGuardianRequest(reqId);
-                            messenger.showSnackBar(const SnackBar(content: Text('已拒絕該申請')));
+                            messenger.showSnackBar(
+                              const SnackBar(content: Text('已拒絕該申請')),
+                            );
                           } catch (e) {
-                            messenger.showSnackBar(SnackBar(content: Text('拒絕失敗: $e')));
+                            messenger.showSnackBar(
+                              SnackBar(content: Text('拒絕失敗: $e')),
+                            );
                           }
                         },
                         style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.redAccent,
                           side: const BorderSide(color: Colors.redAccent),
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
                           minimumSize: Size.zero,
                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         ),
@@ -1283,15 +1324,24 @@ class _BindingGatedCardState extends State<_BindingGatedCard> {
                 final reqId = req['id'] as String;
                 final nudgeId = req['receiverNudgeId'] as String? ?? '';
                 return Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.grey.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+                    border: Border.all(
+                      color: Colors.grey.withValues(alpha: 0.2),
+                    ),
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.hourglass_empty_rounded, size: 16, color: Colors.orange),
+                      const Icon(
+                        Icons.hourglass_empty_rounded,
+                        size: 16,
+                        color: Colors.orange,
+                      ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -1304,9 +1354,13 @@ class _BindingGatedCardState extends State<_BindingGatedCard> {
                           final messenger = ScaffoldMessenger.of(context);
                           try {
                             await widget.appState.declineGuardianRequest(reqId);
-                            messenger.showSnackBar(const SnackBar(content: Text('已撤回綁定申請')));
+                            messenger.showSnackBar(
+                              const SnackBar(content: Text('已撤回綁定申請')),
+                            );
                           } catch (e) {
-                            messenger.showSnackBar(SnackBar(content: Text('撤回失敗: $e')));
+                            messenger.showSnackBar(
+                              SnackBar(content: Text('撤回失敗: $e')),
+                            );
                           }
                         },
                         style: TextButton.styleFrom(
@@ -1315,7 +1369,13 @@ class _BindingGatedCardState extends State<_BindingGatedCard> {
                           minimumSize: Size.zero,
                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         ),
-                        child: const Text('撤回', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                        child: const Text(
+                          '撤回',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     ],
                   ),
@@ -1354,7 +1414,11 @@ class _BindingGatedCardState extends State<_BindingGatedCard> {
                             );
                           } catch (e) {
                             messenger.showSnackBar(
-                              SnackBar(content: Text('申請失敗: ${e.toString().replaceAll('Exception: ', '')}')),
+                              SnackBar(
+                                content: Text(
+                                  '申請失敗: ${e.toString().replaceAll('Exception: ', '')}',
+                                ),
+                              ),
                             );
                           } finally {
                             setState(() => _submitting = false);
@@ -1368,7 +1432,10 @@ class _BindingGatedCardState extends State<_BindingGatedCard> {
                       ? const SizedBox(
                           width: 20,
                           height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
                         )
                       : Text(isGuardian ? '送出綁定申請' : '送出綁定申請'),
                 ),
@@ -1418,7 +1485,11 @@ class _GroupBindingGatedCardState extends State<_GroupBindingGatedCard> {
           children: [
             Row(
               children: [
-                const Icon(Icons.group_add_outlined, color: AppUI.blue, size: 28),
+                const Icon(
+                  Icons.group_add_outlined,
+                  color: AppUI.blue,
+                  size: 28,
+                ),
                 const SizedBox(width: 8),
                 Text(
                   '加入團體組織 (學員模式)',
@@ -1433,8 +1504,81 @@ class _GroupBindingGatedCardState extends State<_GroupBindingGatedCard> {
             const SizedBox(height: 10),
             Text(
               '請輸入您班主任、企業管理者或老師提供的團體組織 ID，即可同步挑戰任務與共讀日程。',
-              style: TextStyle(color: secondaryText, fontSize: 12, height: 1.45),
+              style: TextStyle(
+                color: secondaryText,
+                fontSize: 12,
+                height: 1.45,
+              ),
             ),
+            if (widget.appState.incomingGroupRequests.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              Text(
+                '收到的團體邀請',
+                style: TextStyle(
+                  color: primaryText,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              ...widget.appState.incomingGroupRequests.map((request) {
+                final requestId = request['id'] as String? ?? '';
+                final sender = request['senderNickname'] as String? ?? '團體管理者';
+                final invitedGroupName =
+                    request['groupName'] as String? ?? '自律小組';
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: widget.accentColor.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: widget.accentColor.withValues(alpha: 0.18),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '$sender 邀請你加入「$invitedGroupName」',
+                          style: TextStyle(color: primaryText, fontSize: 12),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: requestId.isEmpty
+                            ? null
+                            : () => widget.appState.declineGroupRequest(
+                                requestId,
+                              ),
+                        child: const Text('拒絕'),
+                      ),
+                      FilledButton(
+                        onPressed: requestId.isEmpty
+                            ? null
+                            : () async {
+                                final messenger = ScaffoldMessenger.of(context);
+                                try {
+                                  await widget.appState.approveGroupRequest(
+                                    request,
+                                  );
+                                  messenger.showSnackBar(
+                                    SnackBar(
+                                      content: Text('已加入「$invitedGroupName」'),
+                                    ),
+                                  );
+                                } catch (error) {
+                                  messenger.showSnackBar(
+                                    SnackBar(content: Text('加入失敗：$error')),
+                                  );
+                                }
+                              },
+                        child: const Text('加入'),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
             const SizedBox(height: 14),
             TextField(
               controller: _idController,
@@ -1499,10 +1643,21 @@ class _ChildHeroDashboardCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final invite = appState.guardianInvite;
-    final goal = invite?['goal'] ?? '一週睡滿 49 小時';
+    final activeGoal = appState.activeFamilyGoal;
+    final goal = activeGoal?['title']?.toString() ?? '目前沒有共同目標';
     final primaryText = AppUI.textPrimaryOf(context);
     final secondaryText = AppUI.textSecondaryOf(context);
+    final bondXp = appState.familyBondXp;
+    final bondLevel = appState.familyBondLevel;
+    final levelStart = bondLevel == 1
+        ? 0
+        : bondLevel == 2
+        ? 10
+        : 30;
+    final levelTarget = bondLevel == 1 ? 10 : 30;
+    final bondProgress = bondLevel >= 3
+        ? 1.0
+        : ((bondXp - levelStart) / (levelTarget - levelStart)).clamp(0.0, 1.0);
 
     final latestEncouragement = appState.guardianEncouragements.isNotEmpty
         ? appState.guardianEncouragements.first
@@ -1529,15 +1684,24 @@ class _ChildHeroDashboardCard extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 decoration: BoxDecoration(
                   color: const Color(0xFF10B981).withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
+                  border: Border.all(
+                    color: const Color(0xFF10B981).withValues(alpha: 0.3),
+                  ),
                 ),
                 child: const Row(
                   children: [
-                    Icon(Icons.family_restroom_rounded, color: Color(0xFF10B981), size: 14),
+                    Icon(
+                      Icons.family_restroom_rounded,
+                      color: Color(0xFF10B981),
+                      size: 14,
+                    ),
                     SizedBox(width: 4),
                     Text(
                       '家長陪伴模式已連結',
@@ -1574,17 +1738,31 @@ class _ChildHeroDashboardCard extends StatelessWidget {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text('共同進度: 71%', style: TextStyle(color: secondaryText, fontSize: 11)),
-                  Text('剩下 4 天', style: TextStyle(color: accentColor, fontSize: 11, fontWeight: FontWeight.bold)),
+                  Text(
+                    '家庭羈絆 Lv.$bondLevel',
+                    style: TextStyle(color: secondaryText, fontSize: 11),
+                  ),
+                  Text(
+                    bondLevel >= 3
+                        ? '$bondXp XP · 最高等級'
+                        : '$bondXp / $levelTarget XP',
+                    style: TextStyle(
+                      color: accentColor,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ],
               ),
               const SizedBox(height: 6),
               ClipRRect(
                 borderRadius: BorderRadius.circular(6),
                 child: LinearProgressIndicator(
-                  value: 0.71,
+                  value: bondProgress,
                   minHeight: 8,
-                  backgroundColor: AppUI.isDark(context) ? const Color(0xFF2A2F3A) : const Color(0xFFE5E7EB),
+                  backgroundColor: AppUI.isDark(context)
+                      ? const Color(0xFF2A2F3A)
+                      : const Color(0xFFE5E7EB),
                   valueColor: AlwaysStoppedAnimation<Color>(accentColor),
                 ),
               ),
@@ -1625,7 +1803,11 @@ class _ChildHeroDashboardCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  Icon(Icons.chevron_right_rounded, color: secondaryText, size: 18),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    color: secondaryText,
+                    size: 18,
+                  ),
                 ],
               ),
             ),
@@ -1661,7 +1843,8 @@ class _GuardianHeroDashboardCard extends StatelessWidget {
           end: Alignment.bottomRight,
           colors: [
             accentColor.withValues(alpha: 0.95),
-            Color.lerp(accentColor, const Color(0xFFFB923C), 0.5) ?? accentColor,
+            Color.lerp(accentColor, const Color(0xFFFB923C), 0.5) ??
+                accentColor,
             const Color(0xFFC2410C).withValues(alpha: 0.96),
           ],
           stops: const [0, 0.6, 1],
@@ -1687,7 +1870,11 @@ class _GuardianHeroDashboardCard extends StatelessWidget {
           const SizedBox(height: 16),
           const Text(
             '孩子的今日自律狀況：',
-            style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.bold),
+            style: TextStyle(
+              color: Colors.white70,
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+            ),
           ),
           const SizedBox(height: 14),
           GridView.count(
@@ -1770,7 +1957,10 @@ class _GroupHeroDashboardCard extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 decoration: BoxDecoration(
                   color: accentColor.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(12),
@@ -1779,7 +1969,9 @@ class _GroupHeroDashboardCard extends StatelessWidget {
                 child: Row(
                   children: [
                     Icon(
-                      isOwner ? Icons.admin_panel_settings_outlined : Icons.group_work_outlined,
+                      isOwner
+                          ? Icons.admin_panel_settings_outlined
+                          : Icons.group_work_outlined,
                       color: accentColor,
                       size: 14,
                     ),
@@ -1797,7 +1989,11 @@ class _GroupHeroDashboardCard extends StatelessWidget {
               ),
               Text(
                 'ID: $groupId',
-                style: TextStyle(color: secondaryText, fontSize: 11, fontFamily: 'monospace'),
+                style: TextStyle(
+                  color: secondaryText,
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                ),
               ),
             ],
           ),
@@ -1824,9 +2020,14 @@ class _GroupHeroDashboardCard extends StatelessWidget {
                     context: context,
                     builder: (ctx) => AlertDialog(
                       title: Text(isOwner ? '解散團體' : '退出團體'),
-                      content: Text('確定要${isOwner ? '解散' : '退出'}當前團體【$groupName】嗎？'),
+                      content: Text(
+                        '確定要${isOwner ? '解散' : '退出'}當前團體【$groupName】嗎？',
+                      ),
                       actions: [
-                        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('取消'),
+                        ),
                         TextButton(
                           onPressed: () async {
                             final navigator = Navigator.of(ctx);
@@ -1837,7 +2038,10 @@ class _GroupHeroDashboardCard extends StatelessWidget {
                               const SnackBar(content: Text('已退出當前團體')),
                             );
                           },
-                          child: const Text('確定', style: TextStyle(color: Colors.redAccent)),
+                          child: const Text(
+                            '確定',
+                            style: TextStyle(color: Colors.redAccent),
+                          ),
                         ),
                       ],
                     ),
@@ -1851,12 +2055,20 @@ class _GroupHeroDashboardCard extends StatelessWidget {
           const Divider(height: 24),
           Row(
             children: [
-              const Icon(Icons.emoji_events_outlined, color: AppUI.orange, size: 18),
+              const Icon(
+                Icons.emoji_events_outlined,
+                color: AppUI.orange,
+                size: 18,
+              ),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
                   '進行中挑戰：7日早起挑戰 (已啟動)',
-                  style: TextStyle(color: primaryText, fontSize: 13, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    color: primaryText,
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ],
