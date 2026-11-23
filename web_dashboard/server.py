@@ -1,12 +1,8 @@
 import os
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
+from flask import Flask, abort, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__, static_folder='.', static_url_path='')
-
-# 允許跨網域請求（GitHub Pages → Render）
-CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 # 判斷是否在雲端環境（Render 會設定 RENDER 環境變數）
 IS_CLOUD = os.environ.get('RENDER', False)
@@ -24,6 +20,48 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 限制最大 16MB
+
+IMAGE_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg',
+               '.jpeg': 'image/jpeg', '.webp': 'image/webp'}
+LOCAL_PEERS = {'127.0.0.1', '::1'}
+
+
+@app.before_request
+def protect_legacy_dashboard():
+    if request.endpoint == 'static':
+        name = request.view_args['filename']
+        parts = name.split('/')
+        if any(part.startswith('.') for part in parts):
+            abort(404)
+        suffix = os.path.splitext(name)[1].lower()
+        is_page = len(parts) == 1 and suffix == '.html'
+        is_asset = parts[0] in {'assets', 'js'} and suffix in {
+            '.css', '.js', '.png', '.jpg', '.jpeg', '.webp',
+        }
+        if not (is_page or is_asset):
+            abort(404)
+        return
+
+    if request.endpoint in (None, 'index'):
+        return
+
+    # Legacy JSON storage has no per-user authorization. Only the loopback
+    # developer server may use it with synthetic demo data.
+    if IS_CLOUD or request.remote_addr not in LOCAL_PEERS:
+        abort(404)
+    if request.host.split(':', 1)[0] not in {'127.0.0.1', 'localhost'}:
+        abort(403)
+    origin = request.headers.get('Origin')
+    if (origin or request.method not in {'GET', 'HEAD'}) and origin != request.host_url.rstrip('/'):
+        abort(403)
+
+
+@app.after_request
+def protect_response(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    if request.endpoint not in (None, 'index', 'static'):
+        response.headers['Cache-Control'] = 'no-store'
+    return response
 
 import json
 import time
@@ -48,7 +86,7 @@ def save_shop_items(items):
 
 @app.route('/')
 def index():
-    return send_from_directory('.', 'index.html')
+    return send_from_directory(app.root_path, 'index.html')
 
 @app.route('/upload-shop-item', methods=['POST'])
 def upload_file():
@@ -59,6 +97,14 @@ def upload_file():
         return jsonify({'error': 'No selected file'}), 400
     if file:
         filename = secure_filename(file.filename)
+        suffix = os.path.splitext(filename)[1].lower()
+        header = file.stream.read(12)
+        file.stream.seek(0)
+        is_png = suffix == '.png' and header.startswith(b'\x89PNG\r\n\x1a\n')
+        is_jpeg = suffix in {'.jpg', '.jpeg'} and header.startswith(b'\xff\xd8\xff')
+        is_webp = suffix == '.webp' and header[:4] == b'RIFF' and header[8:12] == b'WEBP'
+        if not (is_png or is_jpeg or is_webp):
+            return jsonify({'error': 'Only PNG, JPEG and WebP images are accepted'}), 415
         # 為了避免檔名衝突，可以加上 UUID
         unique_filename = f"{uuid.uuid4().hex[:8]}_{filename}"
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
@@ -132,7 +178,10 @@ def get_active_items():
 # 讓 dashboard 可以讀取到剛上傳的圖片 (用於預覽)
 @app.route('/assets/shop/<filename>')
 def uploaded_file(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+    suffix = os.path.splitext(filename)[1].lower()
+    if suffix not in IMAGE_TYPES:
+        abort(404)
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename, mimetype=IMAGE_TYPES[suffix])
 
 
 # ==========================================
@@ -309,23 +358,16 @@ def chat_proxy():
             headers={'Content-Type': 'application/json'},
             method='POST'
         )
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=20) as response:
             res_data = response.read().decode('utf-8')
             return jsonify(json.loads(res_data))
-    except urllib.error.HTTPError as e:
-        err_msg = e.read().decode('utf-8')
-        try:
-            return jsonify(json.loads(err_msg)), e.code
-        except Exception:
-            return jsonify({"error": f"HTTP Error {e.code}: {err_msg}"}), e.code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except (OSError, ValueError):
+        return jsonify({"error": "Upstream request failed"}), 502
     
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
-    debug = not IS_CLOUD  # 雲端不開 debug 模式
     print(f"Server is running on port {port}")
     print(f"Uploading images to: {UPLOAD_FOLDER}")
     print(f"Cloud mode: {IS_CLOUD}")
-    app.run(debug=debug, host='0.0.0.0', port=port)
+    app.run(debug=False, host='127.0.0.1', port=port)

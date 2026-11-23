@@ -77,7 +77,6 @@ flowchart LR
     end
     H["Apple Health /<br/>Health Connect"]
     W["網頁後台 web_dashboard<br/>GitHub Pages"]
-    R["同步伺服器 server.py<br/>Flask · Render"]
 
     UI --> ST --> SV
     ST --> AUTH
@@ -85,7 +84,6 @@ flowchart LR
     ST --> AI
     SV --> H
     W --> FS
-    W --> R
 ```
 
 ---
@@ -96,7 +94,7 @@ flowchart LR
 - **後端服務**：Firebase Authentication、Cloud Firestore、Firebase AI（Gemini）
 - **裝置整合**：Apple Health／Health Connect、本機通知、QR Code 掃描
 - **網頁後台**：HTML／CSS／JavaScript，部署在 GitHub Pages
-- **同步伺服器**：Python Flask + Gunicorn，部署在 Render（`render.yaml`）
+- **舊版展示伺服器**：Python Flask，本機可使用合成資料操作。Render 設定只提供展示頁與靜態資源。
 
 ---
 
@@ -125,7 +123,7 @@ flutter run
 
 `web_dashboard/` 的金鑰以 `__FIREBASE_WEB_API_KEY__` 占位，推送到 `main` 時由 GitHub Actions（`.github/workflows/pages.yml`）從 repo secret `FIREBASE_WEB_API_KEY` 注入並部署到 GitHub Pages。本機測試時請自行替換占位字串。
 
-同步伺服器本機執行：
+執行舊版展示伺服器後，從瀏覽器開啟 http://127.0.0.1:5001/ 。資料操作限定本機同源頁面。
 
 ```bash
 cd web_dashboard

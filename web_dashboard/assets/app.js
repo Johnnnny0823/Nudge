@@ -7186,63 +7186,6 @@ function showGatekeeperOverlay(icon, title, desc, targetRole) {
   }
 }
 
-// ====================================================
-// 🔧 同步伺服器設定
-// 本機開發：http://127.0.0.1:5001
-// 部署到 Render 後：改成你的 Render URL，例如：
-//   https://nudge-sync-server.onrender.com
-// ====================================================
-const SYNC_SERVER_URL = "https://graduation-project-nudge.onrender.com";
-
-function syncToFlaskServer(data, dailySummaries, tasks) {
-  const latestSummary = dailySummaries[dailySummaries.length - 1] || {};
-  const completedCount = tasks.filter(t => t.isDone || t.done).length;
-
-  // 1. Sync User Profile
-  fetch(`${SYNC_SERVER_URL}/api/sync/user`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      user_id: "an_nudge",
-      name: data.nickname || data.name || "使用者",
-      avatar: "🧑‍🚀",
-      status: data.signature || "被專案快搞瘋了"
-    })
-  }).catch(err => console.log("Flask User Sync Error: ", err));
-
-  // 2. Sync Health
-  fetch(`${SYNC_SERVER_URL}/api/sync/health`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      user_id: "an_nudge",
-      sleep_hours: latestSummary.sleepHours || 7.5,
-      steps: latestSummary.steps || 8000,
-      exercise_minutes: latestSummary.exerciseMinutes || 45
-    })
-  }).catch(err => console.log("Flask Health Sync Error: ", err));
-
-  // 3. Sync Focus & Planet Unlock
-  fetch(`${SYNC_SERVER_URL}/api/sync/focus`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      user_id: "an_nudge",
-      tasks_completed: completedCount,
-      tasks_total: tasks.length,
-      focus_minutes: latestSummary.focusMinutes || (data.focusSeconds ? Math.floor(data.focusSeconds / 60) : 40),
-      current_goal: data.webToolsState?.guardianInvite?.goal || ""
-    })
-  })
-  .then(res => res.json())
-  .then(resData => {
-    if (resData.new_planet_unlocked) {
-      toast(`🪐 太陽系躍遷！本週自律達標，Flask 後端成功為您解鎖新星球：【${resData.new_planet_unlocked}】！`);
-    }
-  })
-  .catch(err => console.log("Flask Focus Sync Error: ", err));
-}
-
 let previousTasksState = null;
 let currentUserTasks = [];
 let currentUserDailySummaries = [];
@@ -7861,7 +7804,6 @@ function listenToUser(userId) {
     }
 
     // Propagate user, health, and focus stats to local python Flask server
-    syncToFlaskServer(data, dailySummaries, tasks);
 
     // 📡 Web端自動偵測並同步來自手機 App 建立的膠囊、信件、家長狀態等
     let store = JSON.parse(localStorage.getItem("nudgeWebTools") || "{}");
