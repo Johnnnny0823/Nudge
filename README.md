@@ -98,6 +98,14 @@ flowchart LR
 
 ---
 
+## 🔒 資安與隱私保護
+
+- 網頁儀表板已移除**舊版 Flask 同步呼叫**。這條流程原先會以共用識別碼傳送暱稱、睡眠、步數與專注等資料。
+- **舊版 Flask 的資料 API、模型代理與商品上傳**限定本機來源。Render 模式提供展示頁和指定靜態資源，資料操作回傳 404。
+- **商品圖片上傳**只接受 PNG、JPEG、WebP 並檢查檔頭。靜態路由限制檔案類型，伺服器原始碼與私有 JSON 不直接公開。Flask、Werkzeug 已更新至通過本輪依賴掃描的版本。
+
+13 項 Flask 檢查涵蓋靜態檔案、同源寫入、圖片格式與 Render 模式的存取拒絕。本輪依賴掃描回報 0 項已知漏洞。Firebase 與手機端、現有雲端部署及舊資料留存狀態另待驗證。見 [Flask 存取防護](web_dashboard/server.py)、[依賴版本](web_dashboard/requirements.txt)。
+
 ## 🚀 開發環境設定
 
 ### 1. Firebase 設定檔
